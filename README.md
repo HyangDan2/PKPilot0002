@@ -1,172 +1,214 @@
 # HD2Lab | Midpoint (PKPilot0002)
 
-여럿이 만날 때, 딱 가운데.
-전국 어디든 출발지만 찍으면 **N명 모두에게 가장 공평한 만남 지점**과 **만날 거점**을 찾아 주는 정적 웹앱입니다.
-대중교통으로 모이면 전국 전철역·KTX/SRT·터미널에서, 자차로 모이면 고속도로 IC·휴게소·대형 주차 거점에서 골라 줍니다.
-거점이 정해지면 **앱을 떠나지 않고** 그 주변 맛집·카페를 실시간으로 찾아 1차+2차 약속 코스까지 만들어 줍니다.
+When several people meet, the exact middle.
+Drop each person's starting point and the app finds the **fairest meeting point for everyone** plus the
+**meeting hub** to gather at. By public transport it picks from every metro station, KTX/SRT station and bus
+terminal in the country; by car it picks from highway ICs, service areas and large parking hubs.
+Once the hub is set, it finds restaurants and cafés around it **without leaving the app** and builds a
+first-round + second-round date course.
 
-- 라이브: <https://hyangdan2.github.io/PKPilot0002/>
-- 외부 API 키는 네이버 지도 하나 · 빌드 없음 · 정적 파일만 (NAVER 지도 Web API v3)
+- Live: <https://hyangdan2.github.io/PKPilot0002/>
+- One external API key only (NAVER Maps) · no build · static files only (NAVER Maps Web API v3)
 
-![데스크톱 — 영남권 대중교통 추천](docs/screenshots/desktop-yeongnam-transit.jpg)
+![Desktop — Yeongnam public-transport recommendation](docs/screenshots/desktop-yeongnam-transit.jpg)
 
-| 약속 코스 — 강남역 | 맛집·카페 목록 |
+| Date course — Gangnam | Restaurant / café list |
 | --- | --- |
-| ![약속 코스](docs/screenshots/desktop-course-view.jpg) | ![맛집·카페 목록](docs/screenshots/desktop-places-list.jpg) |
-| **부산 서면 코스** | **모바일 코스** |
-| ![서면 코스](docs/screenshots/desktop-seomyeon-course.jpg) | ![모바일 코스](docs/screenshots/mobile-course-view.jpg) |
+| ![Date course](docs/screenshots/desktop-course-view.jpg) | ![Restaurant and café list](docs/screenshots/desktop-places-list.jpg) |
+| **Seomyeon course** | **Mobile course** |
+| ![Seomyeon course](docs/screenshots/desktop-seomyeon-course.jpg) | ![Mobile course](docs/screenshots/mobile-course-view.jpg) |
 
-| 전국 실시간 인앱 탐색 (이수역) | 실시간 조회 중 반경 넓히기 |
+| Live in-app discovery (Isu) | Widening the radius while live |
 | --- | --- |
-| ![실시간 인앱 탐색](docs/screenshots/desktop-live-places.jpg) | ![반경 넓히기](docs/screenshots/desktop-live-widen.jpg) |
+| ![Live in-app discovery](docs/screenshots/desktop-live-places.jpg) | ![Widening the radius](docs/screenshots/desktop-live-widen.jpg) |
 
-| 모바일 실시간 탐색 | 자차 모드 실시간 탐색 |
+| Mobile live discovery | Car mode live discovery |
 | --- | --- |
-| ![모바일 실시간](docs/screenshots/mobile-live-places.jpg) | ![자차 실시간](docs/screenshots/desktop-live-car.jpg) |
+| ![Mobile live](docs/screenshots/mobile-live-places.jpg) | ![Car live](docs/screenshots/desktop-live-car.jpg) |
 
-| 영남권 자차 모드 | 장거리(서울↔부산) KTX 환승역 |
+| Yeongnam car mode | Long distance (Seoul↔Busan) KTX transfer |
 | --- | --- |
-| ![영남권 자차](docs/screenshots/desktop-yeongnam-car.jpg) | ![장거리](docs/screenshots/desktop-longdistance-transit.jpg) |
+| ![Yeongnam car](docs/screenshots/desktop-yeongnam-car.jpg) | ![Long distance](docs/screenshots/desktop-longdistance-transit.jpg) |
 
-## 기능
+## Features
 
-**출발지 입력**
-- 지도 클릭으로 참가자 추가 (Person 1, Person 2 … 고유 색 마커)
-- **검색창 실시간 자동완성**: 입력하는 즉시 내장 957개 역·터미널 + 799개 IC·휴게소·주차 거점을 골라 제안 (이름 부분 일치·초성 `ㄱㄴ` 검색, 최대 7개)
-  - 항목을 누르면 바로 출발지로 추가, ↑↓ + Enter로도 선택
-  - 내장 데이터에 없으면 Enter·검색 버튼으로 Nominatim 외부 주소 검색
-- 빠른 선택 — 모드에 맞춰 바뀐다: 대중교통(서울역·강남·홍대입구·대전역·동대구역·부산역·창원중앙·광주송정) / 자차(판교IC·기흥IC·천안IC·대전IC·동대구IC·경주IC·서부산IC·동창원IC)
-- 마커 드래그로 미세 조정, 이름 인라인 수정, 개별 삭제, 전체 초기화
-- 최대 12명. 2명 이상이면 즉시 계산
+**Starting points**
+- Add a participant by clicking the map (Person 1, Person 2 …, each with its own colour marker)
+- **Live autocomplete in the search box**: as you type, it suggests from the built-in 957 stations and
+  terminals plus 799 ICs, service areas and parking hubs (partial match, Korean initial-consonant search
+  such as `ㄱㄴ`, up to 7 results)
+  - Tap a result to add it as a starting point; `↑`/`↓` + Enter works too
+  - If the built-in data has no match, Enter or the search button falls back to an external Nominatim
+    address search
+- Quick picks that follow the mode: public transport (Seoul, Gangnam, Hongdae, Daejeon, Dongdaegu, Busan,
+  Changwon Jungang, Gwangju Songjeong) or car (Pangyo IC, Giheung IC, Cheonan IC, Daejeon IC, Dongdaegu IC,
+  Gyeongju IC, Seobusan IC, Dongchangwon IC)
+- Drag a marker to fine-tune, rename inline, delete one, or clear all
+- Up to 12 people; two or more and it calculates immediately
 
-**중간 지점 엔진 — 세 가지 관점**
-| 모드 | 계산 | 의미 |
+**The midpoint engine — three viewpoints**
+| Mode | Calculation | Meaning |
 | --- | --- | --- |
-| **공평점** (기본) | 최소 외접원의 중심 (1-center) | 가장 먼 사람의 거리를 최소로 → 모두에게 고르게 |
-| 균형점 | 기하 중앙값 (Weiszfeld) | 모든 사람의 이동 거리 **합**을 최소로 |
-| 무게중심 | 구면 무게중심 (3D 벡터 평균) | 위치의 평균 — 좌표 중심 |
+| **Fair point** (default) | Centre of the minimum enclosing circle (1-center) | Minimises the farthest person's distance — even for everyone |
+| Balanced point | Geometric median (Weiszfeld) | Minimises the **sum** of everyone's travel distance |
+| Centroid | Spherical centroid (3D vector average) | The average position — the coordinate centre |
 
-- 지도에 오렌지 펄스 마커로 표시, 참가자별 **점선 연결선 + 직선 거리(km)**
-- 평균 거리만큼의 옅은 원(공평 반경) 표시
-- **공평도 지수**: `100 × (1 − (최대거리 − 최소거리) / (최대거리 + 최소거리))`
-  — 모두 같은 거리면 100%, 한 사람만 멀수록 0%에 가까워집니다. 값에 따라 "완벽한 균형 / 아주 공평해요 / 무난한 균형 / 조금 치우쳤어요 / 한쪽에 쏠렸어요" 등급 표시.
-- 참가자별 거리 막대와 합계
-- **0ms 즉시 렌더** — 중간 지점 마커·공평도·거리·길찾기 딥링크는 출발지가 정해지는 순간 먼저 그리고,
-  주소(Nominatim 역지오코딩)와 주변 맛집·카페는 백그라운드로 채웁니다. 역지오코딩은 1초 간격 큐 + 브라우저 저장소(7일) 캐시라 화면을 막지 않습니다
+- Shown on the map as an accent pulse marker, with a **dashed line and straight-line distance (km)** per
+  participant
+- A faint circle at the average distance (the fairness radius)
+- **Fairness index**: `100 × (1 − (max − min) / (max + min))` — 100% when everyone is equally far, close to
+  0% when one person is left out. The value is graded “perfectly balanced / very fair / reasonable /
+  slightly skewed / lopsided”.
+- A distance bar per participant plus the total
+- **0 ms first paint** — the midpoint marker, fairness score, distances and navigation deep links are drawn
+  the moment the starting points are set; addresses (Nominatim reverse geocoding) and nearby restaurants are
+  filled in the background. Reverse geocoding runs through a 1-second queue with a 7-day browser cache, so
+  it never blocks the screen
 
-**추천 만남 거점 — 이동 수단 토글**
-- **🚇 대중교통 모드**: 전국 도시철도(수도권 604개 + 부산·대구·대전·광주 전철) + KTX/SRT 정차역 50곳 + 고속·시외버스터미널 26곳에서 추천. 노선 배지와 함께 표시
-- **🚗 자차 모드**: 전국 고속도로 IC 586곳 + 휴게소·만남의광장 205곳 + 대형 주차 복합몰 8곳에서 추천. 고속도로 배지 + "주차 편리" 배지 표시
-  - 결과 카드 맨 위 **[🎯 정확한 중심점 | 🛣️ IC·휴게소]** 원클릭 토글 — 시내·근거리 모임은 중심 좌표(반경 1~2.5km 안 주차 거점)를,
-    장거리 고속도로 모임은 IC·휴게소를 씁니다. 기본값은 참가자 최대 거리 50km 기준으로 자동 (근거리=중심점, 장거리=IC·휴게소)
-- 참가자 사이 최대 거리가 **50km 이상인 장거리 모임**에서는 환승 거점 가중치가 붙는다 —
-  대중교통은 KTX/SRT 정차역·복합환승센터를, 자차는 휴게소·IC를 우선 추천해 서울↔부산 같은 모임이
-  "중간의 어느 역"이 아니라 "어디서든 닿기 쉬운 광역 거점"으로 스냅된다
-- 더 공평한 후보를 함께 제안 (가장 먼 참가자의 거리가 더 짧은 곳)
+**Recommended meeting hubs — travel-mode toggle**
+- **🚇 Public transport**: nationwide urban rail (604 in the capital area plus Busan, Daegu, Daejeon and
+  Gwangju) + 50 KTX/SRT stations + 26 express/intercity bus terminals, shown with line badges
+- **🚗 Car**: 586 highway ICs + 205 service areas and meeting plazas + 8 large parking complexes, shown with
+  a highway badge and a “parking available” badge
+  - A one-click **[🎯 exact centre | 🛣️ IC · service area]** toggle at the top of the result card — city and
+    short trips use the centre coordinate (parking within 1–2.5 km), long highway trips use ICs and service
+    areas. The default follows the largest participant distance: under 50 km centre, over 50 km IC/service
+    area
+- When the farthest pair is **50 km or more** apart, transfer hubs get a weight bonus — KTX/SRT stations and
+  complex transfer centres for transit, service areas and ICs for cars — so a Seoul↔Busan meeting snaps to a
+  wide-area hub that is easy to reach rather than “some station in the middle”
+- A fairer alternative candidate is offered alongside (one that shortens the farthest person's trip)
 
-**실제 길찾기 · 내비게이션 연동**
-- 추천 거점 카드에 참가자별 길찾기 버튼: 카카오맵 · 네이버지도 (자차 모드는 티맵까지)
-  - 대중교통 모드: 카카오맵 길찾기 · 네이버지도 대중교통 경로
-  - 자차 모드: 카카오내비 · 네이버지도 자동차 경로 · 티맵 내비 앱 스킴
-- 원클릭으로 각자 전철로 몇 분, 차로 몇 분 걸리는지 바로 확인
+**Real navigation deep links**
+- A directions button per participant on the recommended hub card: Kakao Map · Naver Map (T map as well in
+  car mode)
+  - Transit: Kakao Map directions · Naver Map public-transport route
+  - Car: Kakao Navi · Naver Map driving route · T map app scheme
+- One tap to see how many minutes each person needs by train or by car
 
-**🍽️ 주변 맛집·카페 · 1차+2차 약속 코스 — 전국 어디서든 앱 안에서**
-- **30개 주요 거점은 내장 스냅샷으로 0ms 즉시** 표시 (강남·홍대·신촌·종로·서울역·용산·왕십리·성수·잠실·영등포·사당·고속터미널·신림·혜화·광화문·노원·판교·수원,
-  부산 서면·해운대·부산역, 대구 동성로·동대구, 대전 둔산·대전역, 광주 상무지구·광주송정, 창원 상남동·창원중앙, 김해시청)
-- 그 밖의 **전국 900여 개 역·터미널·IC·휴게소·임의의 중간 지점**은 **앱 안에서 실시간 조회** —
-  브라우저가 OpenStreetMap Overpass API(미러 4곳)를 직접 호출해 반경 1km 의 이름 있는 식당·카페·베이커리를 받아 오고,
-  Overpass 대기열이 밀리면 OSM 지도 API(bbox)로 자동 후퇴합니다. 같은 세션·같은 좌표는 메모리 캐시,
-  지난 방문에서 받은 결과는 브라우저 저장소(30분)에 남겨 재조회 없이 즉시 그립니다
-  - 조회 중에는 `🔄 주변 맛집·카페 찾는 중…` 스켈레톤이 떠 화면이 멈추지 않습니다 (일반 2~6초)
-  - 반경 1km 에 아무것도 없으면 **반경 2km·3km 로 넓혀 찾기**, 조회 실패 시 **다시 찾기** — 모두 앱 안에서 해결
-- 결과 카드 하단에 **[📍 추천 코스 | 🍽️ 맛집 (N) | ☕ 카페 (N)]** 서브탭
-- **추천 코스 카드** — `1차: {맛집} ({분류}, 도보 N분)` ➔ `도보 M분 (D m 이동)` ➔ `2차: {카페} ({특징}, 도보 N분)`
-  - 1차는 거점에서 가까운 식당, 2차는 그 식당에서 **도보 2~5분(100~350m)** 카페. 야외석·디저트·베이커리 카페에 가산점, 체인은 감점
-  - 식당·카페가 겹치지 않는 코스 3개 제안 (이상 구간이 모자라면 80~600m까지 넓혀서)
-  - **1차 맛집 길찾기 · 식당➔카페 도보 길찾기** 원클릭 (네이버지도 `/walk` · 카카오맵 `by=FOOT`)
-- **맛집·카페 목록** — 카테고리 배지(한식·일식·중식·양식·고기·치킨·분식·해산물·아시아·베이커리·디저트·카페), 도보 분·거리,
-  특징 태그(야외석·포장·주차·무장애·체인), 카드마다 **★ 네이버 평점** · **카카오 리뷰** 배지(그 장소를 바로 가리키는 링크), **지도에서** 버튼
-- **정렬 토글 [추천순 | 거리순]** — 추천순은 검증된 내장 POI·주차 가능·야외석을 앞세우고, 거리순은 거점에서 가까운 순서 그대로
-- **지도 시각화** — 코스 선택 시 `① 식당`(오렌지 핀) `② 카페`(앰버 핀)와 거점➔식당➔카페 **점선 폴리라인**, 구간에 도보 분 라벨,
-  핀 클릭 시 이름·분류·리뷰 링크 팝업
-- 자차 모드에서는 '주차' 태그가 있는 장소를 앞세워 정렬
-- "네이버·카카오 지도에서 찾아보세요" 로 앱 밖으로 내보내던 안내와 외부 탐색 링크는 **전부 삭제** — 발견은 앱 안에서 끝납니다
+**🍽️ Nearby restaurants · cafés · 1st + 2nd round course — anywhere in the country, inside the app**
+- **30 major hubs are instant from a built-in snapshot** (Gangnam, Hongdae, Sinchon, Jongno, Seoul Station,
+  Yongsan, Wangsimni, Seongsu, Jamsil, Yeongdeungpo, Sadang, Express Bus Terminal, Sillim, Hyehwa,
+  Gwanghwamun, Nowon, Pangyo, Suwon; Busan Seomyeon, Haeundae, Busan Station; Daegu Dongseongno,
+  Dongdaegu; Daejeon Dunsan, Daejeon Station; Gwangju Sangmu, Gwangju Songjeong; Changwon Sangnam,
+  Changwon Jungang; Gimhae City Hall)
+- Every other **station, terminal, IC, service area or arbitrary midpoint among the ~900 remaining** is
+  **queried live inside the app** — the browser calls the OpenStreetMap Overpass API (four mirrors) directly
+  for named restaurants, cafés and bakeries within 1 km, and falls back to the OSM map API (bbox) when the
+  Overpass queue is busy. The same session and coordinate are memory-cached, and results from a previous
+  visit stay in browser storage for 30 minutes and render instantly
+  - While loading, a `🔄 finding nearby places…` skeleton keeps the screen responsive (typically 2–6 s)
+  - If nothing is found within 1 km, **widen to 2 km then 3 km**, and **retry** on failure — all inside the app
+- Sub-tabs at the bottom of the result card: **[📍 Suggested course | 🍽️ Restaurants (N) | ☕ Cafés (N)]**
+- **Suggested course card** — `1st: {restaurant} ({category}, N min walk)` ➔ `M min walk (D m)` ➔
+  `2nd: {café} ({feature}, N min walk)`
+  - The first stop is a restaurant near the hub; the second is a café **2–5 minutes on foot (100–350 m)**
+    from that restaurant. Outdoor seating, dessert and bakery cafés score higher, chains lower
+  - Three non-overlapping courses are suggested (widening to 80–600 m if the ideal band is short)
+  - One tap for **restaurant directions** and **restaurant ➔ café walking directions** (Naver Map `/walk`,
+    Kakao Map `by=FOOT`)
+- **Restaurant / café list** — category badge (Korean, Japanese, Chinese, Western, meat, chicken, snacks,
+  seafood, Asian, bakery, dessert, café), walking minutes and distance, feature tags (outdoor seating, takeaway,
+  parking, accessible, chain), a **★ Naver rating** and **Kakao review** badge per card (linking straight to
+  that place), and a **show on map** button
+- **Sort toggle [Recommended | Nearest]** — recommended puts verified built-in POIs, parking and outdoor
+  seating first; nearest is plain distance from the hub
+- **Map visualisation** — with a course selected, `① restaurant` (accent pin) and `② café` (amber pin) plus a
+  **dashed polyline** hub ➔ restaurant ➔ café with walking-minute labels per leg; clicking a pin opens a
+  popup with name, category and review link
+- In car mode places tagged “parking” are sorted first
+- Every “look it up on Naver/Kakao Map” notice and external browsing link was **removed** — discovery ends
+  inside the app
 
-**공유 · 반응형**
-- 상태를 URL에 인코딩: `?p=37.5665,126.978|37.4979,127.0276&n=재혁~민지&m=centroid&t=car`
-  (좌표 5자리 ≈ 1m 정밀도, `n`은 이름을 바꿨을 때만, `m`은 기본값 `fair`가 아닐 때만, `t`는 자차 모드일 때만)
-- 링크를 받은 사람은 같은 결과·같은 모드를 바로 봅니다. 상태가 바뀔 때마다 `history.replaceState`로 주소 갱신
-- 데스크톱(1440px) 좌측 패널 / 모바일(390px) 하단 **3단 스냅 시트** — 미니 134px · 하프 48dvh · 풀 80dvh
-  - 계산이 끝나면 하프로 열려 지도 절반 이상이 남고, 지도를 만지면 미니로 자동 축소
-  - 핸들을 끌거나 탭(미니→하프→풀), 핸들 옆 [미니·하프·풀] 버튼으로 전환
-- 모바일 사파리 대응: 입력창 16px 고정(포커스 시 강제 확대 방지), 페이지 확대·축소 차단
-  (`user-scalable=no` + `gesturestart`/더블탭 차단), 지도 핀치 줌은 네이버 지도 엔진이 직접 처리
+**Sharing and responsive layout**
+- State is encoded in the URL: `?p=37.5665,126.978|37.4979,127.0276&n=Jaehyuk~Minji&m=centroid&t=car`
+  (coordinates to 5 decimals ≈ 1 m, `n` only when names were changed, `m` only when not the default `fair`,
+  `t` only in car mode)
+- Whoever opens the link sees the same result and mode. The address is kept current with
+  `history.replaceState`
+- Desktop (1440px) left panel / mobile (390px) bottom **three-stage snap sheet** — mini 134px · half 48dvh ·
+  full 80dvh
+  - It opens at half once the calculation finishes so more than half the map stays visible, and shrinks to
+    mini when you touch the map
+  - Drag the handle or tap it (mini → half → full), or use the [mini · half · full] buttons next to it
+- Mobile Safari handling: 16px inputs (no forced zoom on focus), page zoom and double-tap zoom disabled
+  (`user-scalable=no` plus `gesturestart`/double-tap guards), while map pinch-zoom is handled by the Naver
+  Maps engine itself
 
-**브랜딩 · 공유 카드 · HD2Lab 포털 메뉴**
-- HD2Lab 표준 파비콘 세트(`favicon.ico`·`favicon.svg`·`favicon-32x32.png`·`apple-touch-icon.png`)와
-  PWA 매니페스트(`manifest.json` — `HD2Lab Midpoint` / 테마 `#101110`)
-- 카카오톡·SNS 공유 카드: 1200×630 `og-image.png`(다크 `#101110` + 오렌지 `#ff824f` 듀얼 스큐 마크,
-  `HD2Lab | Midpoint`, "여럿이 만날 때, 딱 가운데", 미니 지도·거점 타일)와 Open Graph / Twitter `summary_large_image` 태그
-- 헤더 우측 `…` 버튼 → HD2Lab 포털 드롭다운: **Web-HQ** · **ApplicationHub** · GameHub · TechnicalHub
-  (새 탭으로 열어 앱 상태 유지, 바깥 클릭·Esc 로 닫힘, ↑↓·Home·End 키 이동, `aria-expanded` 동기화)
+**Branding · share card · HD2Lab portal menu**
+- The standard HD2Lab favicon set (`favicon.ico`, `favicon.svg`, `favicon-32x32.png`,
+  `apple-touch-icon.png`), PWA manifest and icons (`HD2Lab Midpoint`, theme `#FAFAFD`)
+- KakaoTalk/SNS share card: a 1200×630 `og-image.png` (Soft Iris light with the violet dual-skew mark,
+  `HD2Lab | Midpoint`, “when several meet, the exact middle”, a mini map and hub tiles) plus Open Graph and
+  Twitter `summary_large_image` tags
+- Soft Iris light by default and Navy & Lavender dark through the shared 44px floating toggle at the bottom
+  right (`localStorage['hd2-theme']`, applied before the first paint); Naver map tiles keep their own colour
+- Header `…` button → HD2Lab portal dropdown: **Web-HQ** · **ApplicationHub** · **GameHub** ·
+  **TechnicalHub** (opens in a new tab so the app state survives; closes on outside click and Esc;
+  arrow/Home/End keys move; `aria-expanded` stays in sync)
 
-## 파일 구조
+## File structure
 
 ```
 PKPilot0002/
-├── index.html            화면 마크업 + 아이콘 스프라이트 + OG/파비콘 메타
-├── style.css             HD2Lab 다크 테마 · 지도/패널/시트 레이아웃 · 포털 드롭다운
-├── app.js                네이버 지도 · 참가자 · 모드 토글 · 결과 UI · 포털 메뉴
-├── manifest.json         PWA 매니페스트 (HD2Lab Midpoint)
+├── index.html            markup + icon sprite + OG/favicon meta + theme pre-paint
+├── style.css             Soft Iris / Navy & Lavender tokens · map/panel/sheet layout · portal dropdown
+├── app.js                Naver map · participants · mode toggle · result UI · portal menu
+├── manifest.json         PWA manifest (HD2Lab Midpoint)
 ├── favicon.ico · favicon.svg · favicon-32x32.png · apple-touch-icon.png · icon-192.png · icon-512.png
-├── og-image.png          1200×630 공유 썸네일 (social-preview.png 동일본)
+├── og-image.png          1200×630 share card (social-preview.png is the same image)
+├── assets/               shared hd2-theme.css / hd2-theme.js (floating light/dark toggle)
 ├── js/
-│   ├── core.js           순수 계산 (거리·중간 지점·공평도·URL·거점 추천·주변 장소·약속 코스) — DOM 의존 없음
-│   ├── stations.js       전국 도시철도·KTX/SRT·터미널 스냅샷 957곳 (자동 생성)
-│   ├── driving_spots.js  전국 고속도로 IC·휴게소·주차 거점 스냅샷 799곳 (자동 생성)
-│   ├── places.js         모임 거점 30곳 주변 맛집·카페 1,435곳 (자동 생성 · OSM ODbL)
-│   ├── live_places.js    전국 임의 좌표 실시간 맛집·카페 조회 (Overpass 미러 → OSM 지도 API fallback · 세션 캐시)
-│   ├── directions.js     카카오맵·네이버지도·티맵 길찾기·도보 딥링크 · 지도 검색 링크
-│   └── landmarks.js      만남 거점 랜드마크 9곳 (Nominatim 확인)
+│   ├── core.js           pure calculations (distance, midpoint, fairness, URL, hub ranking, nearby places, courses) — no DOM
+│   ├── stations.js       nationwide metro · KTX/SRT · terminal snapshot, 957 places (generated)
+│   ├── driving_spots.js  nationwide highway IC · service area · parking snapshot, 799 places (generated)
+│   ├── places.js         1,435 restaurants and cafés around 30 meeting hubs (generated · OSM ODbL)
+│   ├── live_places.js    live nearby search for any coordinate (Overpass mirrors → OSM map API fallback · session cache)
+│   ├── directions.js     Kakao/Naver/T map directions and walking deep links · map search links
+│   └── landmarks.js      9 meeting-hub landmarks (verified with Nominatim)
 ├── tools/
-│   ├── generate_brand_assets.py  파비콘 세트·OG 이미지 생성기 (Pillow + cairosvg)
-│   ├── build_network.py      stations.js·driving_spots.js 생성기 (Wikidata + OSM Overpass)
-│   ├── build_places.py       places.js 생성기 (OSM Overpass — 이름·좌표·영업 태그·주차장)
-│   ├── build_stations.py     (구버전 수도권 전용 생성기 — build_network.py로 대체)
-│   └── data/                 거점 정의(hubs.json)·장소 스냅샷(places.json)·KTX/터미널 좌표
+│   ├── generate_brand_assets.py  favicon set and OG image generator (Pillow + cairosvg)
+│   ├── build_network.py          stations.js / driving_spots.js generator (Wikidata + OSM Overpass)
+│   ├── build_places.py           places.js generator (OSM Overpass — name, coordinates, opening tags, parking)
+│   ├── build_stations.py         (legacy capital-area-only generator, superseded by build_network.py)
+│   └── data/                     hub definitions (hubs.json), place snapshots (places.json), KTX/terminal coordinates
 ├── tests/
-│   ├── run_tests.py      단위 테스트 러너 (Playwright + http.server)
-│   ├── unit/             테스트 하네스·케이스 146개 (core + places + live_places)
+│   ├── run_tests.py      unit test runner (Playwright + http.server)
+│   ├── unit/             harness and 146 cases (core + places + live_places)
 │   └── visual/
-│       ├── capture.py             화면 검증 + 스크린샷 (기본·모드 토글·영남권·장거리·약속 코스·실시간 인앱 탐색·fallback)
-│       └── portal_menu_check.py   헤더 `…` 포털 드롭다운 검증 (데스크톱·모바일 열기/닫기·링크·정렬)
-└── docs/screenshots/     데스크톱·모바일 스크린샷
+│       ├── capture.py            screen checks + screenshots (base, mode toggle, Yeongnam, long distance, course, live in-app discovery, fallback)
+│       └── portal_menu_check.py  header `…` portal dropdown checks (desktop/mobile open, close, links, order)
+└── docs/screenshots/     desktop and mobile screenshots
 ```
 
-## 데이터 출처와 갱신
+## Data sources and refresh
 
-- 도시철도역 좌표·노선: Wikidata (CC0)
-- 고속도로 IC·휴게소·본선 도로명: OpenStreetMap (ODbL)
-- 맛집·카페 POI: OpenStreetMap Overpass API (ODbL) — 이름 있는 `restaurant`·`cafe`·`fast_food`·`bakery`·`ice_cream`,
-  `shop=bakery|coffee|dessert`, 반경 800m, 주차장(`amenity=parking`) 150m 이내 여부로 '주차' 태그
-- 실시간 맛집·카페 조회: 브라우저가 OpenStreetMap Overpass API 미러(`overpass-api.de` → `lz4` → `kumi` → `private.coffee`)를
-  시간차로 동시 호출하고, 모두 밀리면 `api.openstreetmap.org/api/0.6/map.json`(bbox)으로 후퇴합니다. 반경 1km,
-  이름 있는 식당·카페·베이커리만, 세션 메모리 캐시(`Map`)로 재요청을 막습니다. 스냅샷과 같은 분류·정제 규칙을 씁니다
-- KTX/SRT 정차역·버스터미널·대형 주차 거점: `tools/data/*.json` (직접 확인)
+- Metro station coordinates and lines: Wikidata (CC0)
+- Highway ICs, service areas and road names: OpenStreetMap (ODbL)
+- Restaurant and café POIs: OpenStreetMap Overpass API (ODbL) — named `restaurant`, `cafe`, `fast_food`,
+  `bakery`, `ice_cream` and `shop=bakery|coffee|dessert` within 800 m, tagged “parking” when a car park
+  (`amenity=parking`) is within 150 m
+- Live restaurant search: the browser calls the OpenStreetMap Overpass API mirrors
+  (`overpass-api.de` → `lz4` → `kumi` → `private.coffee`) in a staggered parallel burst and falls back to
+  `api.openstreetmap.org/api/0.6/map.json` (bbox) if all are busy. 1 km radius, named restaurants, cafés and
+  bakeries only, with a session memory cache (`Map`) to avoid repeat requests. It applies the same
+  classification and clean-up rules as the snapshot
+- KTX/SRT stations, bus terminals and large parking hubs: `tools/data/*.json` (checked by hand)
 
 ```sh
-python3 tools/build_network.py            # 캐시 재사용
-python3 tools/build_network.py --refresh  # 원본부터 다시 받기
-python3 tools/build_places.py             # 맛집·카페 수집 (캐시 재사용)
-python3 tools/build_places.py --all       # 남은 거점을 한 번의 Overpass 요청으로 수집
-python3 tools/build_places.py --emit-only # 캐시만으로 js/places.js 재생성
+python3 tools/build_network.py            # reuse cache
+python3 tools/build_network.py --refresh  # download from the sources again
+python3 tools/build_places.py             # collect restaurants and cafés (reuse cache)
+python3 tools/build_places.py --all       # collect the remaining hubs in one Overpass request
+python3 tools/build_places.py --emit-only # regenerate js/places.js from the cache only
 ```
 
-> OSM에는 평점이 없습니다. 그래서 '맛집' 순위는 **거점에서 가까운 순**(도보 분)이고,
-> 평점·리뷰는 각 장소의 네이버·카카오 지도 링크에서 확인하도록 넘깁니다.
-> OSM 등재 장소가 적은 지방 거점은 실시간 조회가 자동으로 채우고, 그래도 비면 반경을 넓혀 다시 찾습니다.
+> OSM has no ratings. So “best restaurant” ranking is really distance from the hub (walking minutes), and
+> ratings and reviews are handed off to each place's Naver/Kakao Map link.
+> Regional hubs with few OSM entries are filled by the live query, and if it is still empty the radius is
+> widened and searched again.
 
-## 로컬에서 실행
+## Run locally
 
 ```sh
 cd PKPilot0002
@@ -174,52 +216,69 @@ python3 -m http.server 8080
 # http://localhost:8080/
 ```
 
-ES 모듈을 쓰므로 `file://`로 열면 동작하지 않습니다. 정적 서버가 필요합니다.
+It uses ES modules, so opening `file://` will not work; a static server is required.
 
-## 테스트
+## Tests
 
 ```sh
-python3 tests/run_tests.py            # 단위 테스트 146개
-python3 tests/visual/capture.py --check   # Chromium 화면 검증
-python3 tests/visual/capture.py       # 검증 + 스크린샷 갱신
-python3 tests/visual/portal_menu_check.py --check   # 헤더 `…` 포털 드롭다운 검증
-python3 tools/generate_brand_assets.py             # 파비콘·OG 이미지 재생성
+python3 tests/run_tests.py            # 146 unit tests
+python3 tests/visual/capture.py --check   # Chromium screen checks
+python3 tests/visual/capture.py       # checks + refresh screenshots
+python3 tests/visual/portal_menu_check.py --check   # header `…` portal dropdown
+python3 tools/generate_brand_assets.py             # regenerate favicons and the OG image
 ```
 
-- 단위 테스트: Haversine, 구면 무게중심, Weiszfeld·최소 외접원, 공평도, 좌표 정규화, URL 인코딩/파싱(잘못된 좌표·인원 초과·해시·전체 URL), 역·랜드마크 추천, 검색 자동완성(완전 일치·부분 일치·초성·랜드마크), 표시 형식,
-  **거점↔허브 매칭, 반경 필터·종류 필터·주차 우선, 코스 페어링(도보 100~350m·중복 없음·합계), 검색·도보 딥링크, POI 데이터 정합성(반경 800m·좌표·링크)**,
-  **실시간 POI 파싱(업종 분류·이름 정제·거리·도보·주차·중복 제거·상한), Overpass 쿼리·bbox, 내장+실시간 병합, 실시간 POI 만으로 코스 생성, 미러 fallback·타임아웃·세션 캐시**
-- 화면 검증: 지도 타일 로드, 핀/마커 수, 결과 카드, URL 상태, 공유 링크 왕복, 모드 전환, 삭제/초기화, 모바일 시트 접힘·펼침,
-  **강남·홍대·서면·김해 코스 카드·탭 전환·지도 ①·② 마커·폴리라인,
-  비허브 거점(이수·의정부·천안·구미) 실시간 인앱 탐색과 외부 링크 미노출, 0곳·실패 모의 응답에서 스켈레톤 → 반경 2km 넓히기 → 다시 찾기, 모바일 가로 넘침**
-- Node.js 없이 Playwright(Chromium)만 사용합니다. `pip install playwright && playwright install chromium` 필요.
-- NAVER 지도는 NCP 콘솔에 등록된 도메인에서만 뜹니다. 로컬(`http://127.0.0.1`)에서는 지도가 401 로 막히므로
-  화면 검증은 배포본으로 돌립니다: `python3 tests/visual/capture.py --base https://hyangdan2.github.io/PKPilot0002/`
+- Unit tests: Haversine, spherical centroid, Weiszfeld and minimum enclosing circle, fairness, coordinate
+  normalisation, URL encode/parse (bad coordinates, too many people, hash, full URL), station and landmark
+  ranking, search autocomplete (exact, partial, initial consonant, landmark), display formatting,
+  **hub-to-result matching, radius/kind filters and parking priority, course pairing (100–350 m walk, no
+  duplicates, total), search and walking deep links, POI data integrity (800 m radius, coordinates, links)**,
+  **live POI parsing (category, name clean-up, distance, walking time, parking, de-duplication, cap), Overpass
+  query and bbox, built-in + live merge, course built from live POIs only, mirror fallback, timeout and
+  session cache**
+- Screen checks: map tile load, pin and marker counts, result card, URL state, share-link round trip, mode
+  switch, delete/clear, mobile sheet collapse and expand,
+  **Gangnam, Hongdae, Seomyeon and Gimhae course cards and tab switching, map ①/② markers and polyline,
+  live in-app discovery at non-hub hubs (Isu, Uijeongbu, Cheonan, Gumi) with no external links exposed,
+  skeleton → widen to 2 km → retry on empty and failed mock responses, mobile horizontal overflow**
+- Uses Playwright (Chromium) only, no Node.js. `pip install playwright && playwright install chromium`.
+- NAVER Maps only renders on a domain registered in the NCP console. Locally (`http://127.0.0.1`) the map is
+  blocked with 401, so screen checks run against the deployment:
+  `python3 tests/visual/capture.py --base https://hyangdan2.github.io/PKPilot0002/`
 
-## 데이터 · 타일
+## Data and tiles
 
-| 대상 | 출처 | 비고 |
+| Item | Source | Note |
 | --- | --- | --- |
-| 지도 | NAVER 지도 Web API v3 (`ncpKeyId`) | 확대·축소·종류(일반/위성) 컨트롤은 앱 UI 로 직접 그렸습니다. 타일·로고·저작권은 네이버가 그립니다 |
-| 지오코딩 | Nominatim (search / reverse) | 공개 인스턴스 정책에 맞춰 요청을 1초 간격으로 큐잉, 결과 캐시 |
-| 지하철역 좌표 | Wikidata (CC0) | `tools/build_stations.py`로 수도권 589개 역 생성 |
-| 맛집·카페 POI | OpenStreetMap Overpass (ODbL) | `tools/build_places.py` — 30개 거점 반경 800m, 1,435곳 + 브라우저 실시간 조회. 평점 없음 → 네이버·카카오 리뷰 링크 |
-| 랜드마크 | OpenStreetMap Nominatim | `js/landmarks.js` — 추천 후보에 함께 사용 |
+| Map | NAVER Maps Web API v3 (`ncpKeyId`) | Zoom, pan and map-type (normal/satellite) controls are drawn by the app; tiles, logo and copyright are drawn by Naver |
+| Geocoding | Nominatim (search / reverse) | Queued at one request per second per the public instance policy, with a result cache |
+| Station coordinates | Wikidata (CC0) | Regenerated by `tools/build_network.py` |
+| Restaurant and café POIs | OpenStreetMap Overpass (ODbL) | `tools/build_places.py` — 800 m around 30 hubs, 1,435 places, plus the browser's live query. No ratings, so Naver/Kakao review links |
+| Landmarks | OpenStreetMap Nominatim | `js/landmarks.js` — used alongside the recommendation candidates |
 
-> 지도 엔진은 **NAVER 지도 Web API v3**(NCP Web Dynamic Map)입니다. 키는 `index.html` 의 스크립트 URL(`ncpKeyId=…`)에 있고, 동작하려면 [NAVER Cloud Platform 콘솔](https://console.ncloud.com/maps)의 해당 애플리케이션에 **Web 서비스 URL**로 `https://hyangdan2.github.io` 가 등록되어 있어야 합니다. 등록되지 않은 오리진(예: `http://127.0.0.1:8080` 로컬 서버)에서는 지도가 401 로 막히므로, 로컬에서 지도까지 보려면 `http://localhost` 를 함께 등록하세요. 지도 종류는 일반/위성 토글이며, OSM 시절의 다크 CSS 필터(`invert + hue-rotate`)는 해상도 저하·색 왜곡 때문에 없앴습니다.
+> The map engine is **NAVER Maps Web API v3** (NCP Web Dynamic Map). The key sits in the `index.html` script
+> URL (`ncpKeyId=…`), and for it to work `https://hyangdan2.github.io` must be registered as a **Web service
+> URL** for that application in the [NAVER Cloud Platform console](https://console.ncloud.com/maps). An
+> unregistered origin (for example a local `http://127.0.0.1:8080`) is blocked with 401, so register
+> `http://localhost` as well if you want the map locally. Map type is a normal/satellite toggle; the dark CSS
+> filter from the OSM era (`invert + hue-rotate`) was removed because it degraded resolution and shifted colours.
 
-## 제약
+## Limits
 
-- 네트워크가 있어야 지도·주소가 보입니다. 오프라인 캐시는 없습니다.
-- Nominatim 공개 인스턴스는 초당 1회 수준으로만 호출합니다. 대량 사용 시 자체 프록시가 필요합니다.
-- 거리는 직선(대권) 거리이고 도보 시간은 4.5km/h 기준 추정치입니다. 실제 이동 시간·경로는 반영하지 않습니다.
-- 역 추천은 좌표 최근접 방식이라 출입구·환승 동선은 고려하지 않습니다.
-- 맛집·카페 목록은 OSM에 이름이 등재된 곳만 담습니다. 등재되지 않은 곳은 앱의 실시간 조회로도 잡히지 않으며,
-  영업 여부·평점은 지도 리뷰에서 확인해야 합니다.
-- 실시간 조회는 공개 Overpass API·OSM 지도 API 를 쓰므로 서버가 붐비면 몇 초 더 걸리거나 실패할 수 있습니다
-  (미러 4곳 + OSM 지도 API 후퇴로, 화면의 '다시 찾기' 버튼). 한 번 받은 좌표는 세션 동안 캐시됩니다.
-- 코스의 도보 거리는 두 좌표의 직선거리에 1.25배 보정을 준 값입니다. 실제 보행 경로·횡단보도는 반영하지 않습니다.
+- A network connection is needed for the map and addresses. There is no offline cache.
+- The public Nominatim instance is called at roughly one request per second. Heavy use needs its own proxy.
+- Distances are great-circle, and walking time is an estimate at 4.5 km/h. Real routes and travel times are
+  not modelled.
+- Station ranking is nearest-coordinate based, so exits and transfer walks are not considered.
+- Restaurant and café lists only include places named in OSM. Unlisted places are not caught by the live
+  query either, and opening hours and ratings must be checked on the map reviews.
+- The live query uses public Overpass and OSM map APIs, so a busy server can add a few seconds or fail
+  (four mirrors plus the OSM map API fallback, and the on-screen retry button). A coordinate fetched once is
+  cached for the session.
+- Course walking distances are the straight-line distance between two points with a 1.25× correction. Real
+  footpaths and crossings are not modelled.
 
-## 브라우저
+## Browsers
 
-최신 Chromium·Safari·Firefox. ES 모듈, `dvh` 단위, `color-mix()`를 사용합니다(iOS 16.4+ / Safari 16.4+).
+Current Chromium, Safari and Firefox. It uses ES modules, `dvh` units and `color-mix()` (iOS 16.4+ /
+Safari 16.4+).
