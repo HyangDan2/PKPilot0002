@@ -30,6 +30,9 @@ first-round + second-round date course.
 | --- | --- |
 | ![Yeongnam car](docs/screenshots/desktop-yeongnam-car.jpg) | ![Long distance](docs/screenshots/desktop-longdistance-transit.jpg) |
 
+*These captures were taken before the Soft Iris redesign. The screens and flows they show are still current;
+the palette is now light violet by default, with Navy & Lavender as the dark theme.*
+
 ## Features
 
 **Starting points**
