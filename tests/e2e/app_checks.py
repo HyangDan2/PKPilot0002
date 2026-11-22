@@ -58,28 +58,29 @@ def live_fixture(lat: float, lng: float) -> dict:
     }
 
 
-def install_live_mock(page, hold: bool = False):
+def payload_for(request) -> dict:
+    body = request.post_data or ""
+    around = re.search(r"around:\d+,([\d.]+),([\d.]+)", body)
+    if around:
+        return live_fixture(float(around.group(1)), float(around.group(2)))
+    box = re.search(r"bbox=([\d.-]+),([\d.-]+),([\d.-]+),([\d.-]+)", request.url)
+    if box:
+        west, south, east, north = (float(value) for value in box.groups())
+        return live_fixture((south + north) / 2, (west + east) / 2)
+    return {"elements": []}
+
+
+def install_live_mock(page) -> dict:
     """Overpass·OSM 지도 API 응답을 모의한다 — 테스트가 네트워크에 기대지 않게.
 
-    hold=True 면 응답을 붙잡아 두고, flush_live() 로 나중에 내보낸다.
+    state["hold"] = True 로 두면 응답을 붙잡아 두고 flush_live() 로 내보낸다.
     (입력 도중 실시간 조회가 끝나 render() 가 도는 상황을 만들 때 쓴다)
     """
-    pending: list = []
-
-    def payload_for(request) -> dict:
-        body = request.post_data or ""
-        around = re.search(r"around:\d+,([\d.]+),([\d.]+)", body)
-        if around:
-            return live_fixture(float(around.group(1)), float(around.group(2)))
-        box = re.search(r"bbox=([\d.-]+),([\d.-]+),([\d.-]+),([\d.-]+)", request.url)
-        if box:
-            west, south, east, north = (float(value) for value in box.groups())
-            return live_fixture((south + north) / 2, (west + east) / 2)
-        return {"elements": []}
+    state = {"hold": False, "pending": []}
 
     def handler(route, request):
-        if hold:
-            pending.append((route, request))
+        if state["hold"]:
+            state["pending"].append((route, request))
             return
         route.fulfill(
             status=200,
@@ -89,11 +90,12 @@ def install_live_mock(page, hold: bool = False):
 
     page.route("**/api/interpreter", handler)
     page.route("**/api/0.6/map.json*", handler)
-    return pending
+    return state
 
 
-def flush_live(pending: list, keep: int = 1) -> int:
+def flush_live(state: dict, keep: int = 1) -> int:
     """붙잡아 둔 실시간 요청 중 keep 개를 응답한다 — 나머지는 버린다."""
+    pending = state["pending"]
     sent = 0
     while pending and sent < keep:
         route, request = pending.pop(0)
@@ -112,6 +114,7 @@ def flush_live(pending: list, keep: int = 1) -> int:
         except Exception:
             pass
     pending.clear()
+    state["hold"] = False
     return sent
 
 
@@ -204,7 +207,8 @@ def main() -> int:
         # ---------- 비동기 렌더 중 이름 입력 유지 ----------
         page.click("#resetBtn")
         page.wait_for_timeout(400)
-        pending = install_live_mock(page, hold=True)
+        mock = install_live_mock(page)
+        mock["hold"] = True
         add_search(page, "사당역")
         add_search(page, "이수역")
         page.wait_for_timeout(600)
@@ -213,7 +217,7 @@ def main() -> int:
         page.keyboard.press("Control+a")
         page.keyboard.type("재혁", delay=90)
         # 입력 도중 실시간 조회 결과가 도착하며 render() 가 돌아도 입력이 살아 있어야 한다
-        flush_live(pending)
+        flush_live(mock)
         page.wait_for_timeout(2200)
         focused = page.evaluate("document.activeElement && document.activeElement.getAttribute('data-name')")
         value = page.evaluate("document.activeElement && document.activeElement.value")
@@ -285,6 +289,10 @@ def main() -> int:
 
         # ---------- 배포본에서만: 지도 핀 상호작용 ----------
         if args.base:
+            # 앞선 자차 테스트에서 바뀐 모드를 되돌린다
+            if page.locator('#modeToggle button[data-travel="transit"]').get_attribute("aria-pressed") != "true":
+                page.click('#modeToggle button[data-travel="transit"]')
+                page.wait_for_timeout(600)
             tiles = page.evaluate(
                 "Array.from(document.querySelectorAll('#map img')).filter(i => i.complete && i.naturalWidth > 0).length"
             )
@@ -311,6 +319,20 @@ def main() -> int:
                     page.wait_for_timeout(500)
                     if page.locator(".map-popup").count() == 0:
                         problems.append("장소 확인 뒤 거점 핀을 눌러도 말풍선이 열리지 않습니다 (탭 처리기 유실)")
+                    else:
+                        page.keyboard.press("Escape")
+                        page.wait_for_timeout(200)
+                # 코스 ①·② 핀도 같은 레이어 처리기를 쓴다 — 장소 확인 뒤에도 살아 있어야 한다
+                page.click(".nearby-tabs button[data-place-view='course']")
+                page.wait_for_timeout(700)
+                course_pins = page.locator(".pin-course")
+                if course_pins.count() != 2:
+                    problems.append(f"코스 핀이 2개가 아닙니다: {course_pins.count()}")
+                else:
+                    course_pins.first.click()
+                    page.wait_for_timeout(500)
+                    if page.locator(".map-popup").count() == 0:
+                        problems.append("장소 확인 뒤 코스 핀을 눌러도 말풍선이 열리지 않습니다")
                     else:
                         page.keyboard.press("Escape")
                         page.wait_for_timeout(200)

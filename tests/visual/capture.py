@@ -85,7 +85,9 @@ def set_travel(page, mode: str):
 
 def reset_all(page):
     if page.locator(".participant").count():
-        page.click("#resetBtn")
+        # 모바일 미니 시트에서는 헤더의 초기화 버튼이 잘려 클릭이 막힌다 —
+        # 테스트 도우미는 화면 단계와 무관하게 눌러야 한다.
+        page.eval_on_selector("#resetBtn", "node => node.click()")
         page.wait_for_timeout(500)
 
 
@@ -304,6 +306,11 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true", help="검증만 수행")
     parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="실시간(Overpass) 시나리오를 건너뛴다 — 네트워크가 느릴 때 빠른 회귀 확인용",
+    )
+    parser.add_argument(
         "--base",
         default=None,
         help="검증할 앱 주소 (기본: 로컬 서버). NAVER 지도는 NCP 콘솔에 등록된 도메인에서만 뜨므로 "
@@ -311,6 +318,7 @@ def main() -> int:
     )
     args = parser.parse_args()
     shots = not args.check
+    quick = args.quick
 
     try:
         from playwright.sync_api import sync_playwright
@@ -439,13 +447,16 @@ def main() -> int:
             problems.append("자차 모드인데 URL에 t=car가 없습니다")
         if page.locator(".chip:has-text('판교IC')").count() == 0:
             problems.append("자차 모드에서 IC 프리셋이 나오지 않습니다")
-        if page.locator(".parking-badge").count() == 0:
-            problems.append("자차 모드인데 '주차 편리' 배지가 없습니다")
+        # 시내 모임은 '정확한 중심점'(또는 주차 거점), 장거리는 IC·휴게소 —
+        # 자차 모드에서는 어느 쪽이든 거점 배지가 붙어야 한다.
+        if page.locator(".parking-badge, .center-badge").count() == 0:
+            problems.append("자차 모드인데 거점 배지(중심 좌표·주차 편리)가 없습니다")
         car_naver = page.locator(".nav-chip").nth(1).get_attribute("href")
         if not car_naver or not car_naver.endswith("/car"):
             problems.append(f"자차 모드 네이버 길찾기가 /car가 아닙니다: {car_naver}")
-        if page.locator(".nav-chip").count() < 3 * 3:
-            problems.append("자차 모드에서 티맵 버튼이 추가되지 않습니다")
+        # PC 에서는 앱 전용(티맵) 버튼을 숨긴다 — 참가자×2(카카오내비·네이버지도)
+        if page.locator(".nav-chip").count() < 3 * 2:
+            problems.append("자차 모드 길찾기 버튼이 모자랍니다")
         scroll_panel(page)
         if shots:
             shot(page, "desktop-car-result")
@@ -473,8 +484,9 @@ def main() -> int:
 
         set_travel(page, "car")
         car_spot = station_name(page)
-        if not any(word in car_spot for word in ("IC", "휴게소")):
-            problems.append(f"영남권 자차 모드 추천이 IC·휴게소가 아닙니다: {car_spot}")
+        # 연산~창원중앙(약 35km)은 장거리 기준(50km) 미만 — 자차는 시내 기준(정확한 중심점)을 쓴다.
+        if not any(word in car_spot for word in ("IC", "휴게소", "정확한 중심점")):
+            problems.append(f"영남권 자차 모드 추천이 이상합니다: {car_spot}")
         scroll_panel(page)
         if shots:
             shot(page, "desktop-yeongnam-car")
@@ -557,13 +569,15 @@ def main() -> int:
         # ---------------- 실시간 인앱 탐색 — 30개 허브 밖 거점 ----------------
         # 내장 스냅샷이 없는 거점에서도 앱 밖으로 나가지 않고 OpenStreetMap 실시간 조회로
         # 맛집·카페·1차+2차 코스를 그려야 한다.
-        live_su = live_scenario(page, ["사당역", "이수역"], shots, problems, "이수", "desktop-live-places")
-        live_ui = live_scenario(page, ["의정부역", "가능역"], shots, problems, "의정부", "desktop-live-uijeongbu")
-        live_cc = live_scenario(page, ["천안역", "봉명역"], shots, problems, "천안", "desktop-live-cheonan")
-        live_gu = live_scenario(page, ["구미역", "김천구미역"], shots, problems, "구미", "desktop-live-gumi")
-        for label, info in (("이수", live_su), ("의정부", live_ui), ("천안", live_cc), ("구미", live_gu)):
-            if info:
-                print(f"  · 실시간 {label}: {info['anchor']} · 맛집 {info['restaurants']} · 카페 {info['cafes']} · 코스 {info['courses']}")
+        live_su = None
+        if not quick:
+            live_su = live_scenario(page, ["사당역", "이수역"], shots, problems, "이수", "desktop-live-places")
+            live_ui = live_scenario(page, ["의정부역", "가능역"], shots, problems, "의정부", "desktop-live-uijeongbu")
+            live_cc = live_scenario(page, ["천안역", "봉명역"], shots, problems, "천안", "desktop-live-cheonan")
+            live_gu = live_scenario(page, ["구미역", "김천구미역"], shots, problems, "구미", "desktop-live-gumi")
+            for label, info in (("이수", live_su), ("의정부", live_ui), ("천안", live_cc), ("구미", live_gu)):
+                if info:
+                    print(f"  · 실시간 {label}: {info['anchor']} · 맛집 {info['restaurants']} · 카페 {info['cafes']} · 코스 {info['courses']}")
 
         # 같은 거점을 다시 계산해도 재조회 없이 바로 뜨는지 (세션 캐시)
         if live_su:
@@ -578,24 +592,25 @@ def main() -> int:
                 problems.append("[이수] 같은 거점 재계산에서 코스가 비었습니다")
 
         # 자차 모드에서도 코스 섹션이 깨지지 않는다 (거점이 IC·휴게소)
-        reset_all(page)
-        set_travel(page, "car")
-        add_search(page, "판교IC")
-        add_search(page, "기흥IC")
-        settle(page, 1400)
-        nearby_ready(page)
-        wait_live(page)
-        if page.locator("#nearbySection").count() == 0:
-            problems.append("자차 모드에서 맛집·카페 섹션이 사라졌습니다")
-        if live_status(page) not in ("ready", "empty"):
-            problems.append(f"자차 모드 실시간 조회가 끝나지 않았습니다: {live_status(page)}")
-        if page.locator(".nearby-live").count() and "실시간" not in page.locator(".nearby-live").first.inner_text():
-            problems.append("자차 모드 실시간 표기가 이상합니다")
-        if shots:
-            page.eval_on_selector("#nearbySection", "n => n.scrollIntoView({block: 'start'})")
-            page.wait_for_timeout(350)
-            shot(page, "desktop-live-car")
-        set_travel(page, "transit")
+        if not quick:
+            reset_all(page)
+            set_travel(page, "car")
+            add_search(page, "판교IC")
+            add_search(page, "기흥IC")
+            settle(page, 1400)
+            nearby_ready(page)
+            wait_live(page)
+            if page.locator("#nearbySection").count() == 0:
+                problems.append("자차 모드에서 맛집·카페 섹션이 사라졌습니다")
+            if live_status(page) not in ("ready", "empty"):
+                problems.append(f"자차 모드 실시간 조회가 끝나지 않았습니다: {live_status(page)}")
+            if page.locator(".nearby-live").count() and "실시간" not in page.locator(".nearby-live").first.inner_text():
+                problems.append("자차 모드 실시간 표기가 이상합니다")
+            if shots:
+                page.eval_on_selector("#nearbySection", "n => n.scrollIntoView({block: 'start'})")
+                page.wait_for_timeout(350)
+                shot(page, "desktop-live-car")
+            set_travel(page, "transit")
 
         # ---------------- 실시간 fallback — 0곳 · 실패 → 반경 넓히기·다시 찾기 ----------------
         # 네트워크는 모의 응답으로 고정해 UI 상태 전환만 결정적으로 검증한다.
@@ -735,34 +750,35 @@ def main() -> int:
             shot(m, "mobile-course-map")
 
 
-        # 모바일 실시간 탐색 — 비허브 거점(사당·이수 → 이수역)
-        reset_all(m)
-        add_search(m, "사당역")
-        add_search(m, "이수역")
-        settle(m, 1400)
-        set_stage(m, "full")
-        nearby_ready(m)
-        wait_live(m)
-        if live_status(m) != "ready":
-            problems.append(f"모바일 실시간 조회 결과가 없습니다: {live_status(m)}")
-        if m.locator(".course-card").count() == 0:
-            problems.append("모바일에서 실시간 코스 카드가 없습니다")
-        if m.locator(".nearby").evaluate("node => node.scrollWidth > node.clientWidth + 1"):
-            problems.append("모바일에서 실시간 맛집·카페 섹션이 가로로 넘칩니다")
-        if m.locator(".nearby-head").evaluate("node => node.scrollWidth > node.clientWidth + 1"):
-            problems.append("모바일에서 맛집·카페 헤더(실시간 칩·거점명)가 넘칩니다")
-        m.eval_on_selector("#nearbySection", "n => n.scrollIntoView({block: 'start'})")
-        m.wait_for_timeout(450)
-        if shots:
-            shot(m, "mobile-live-places")
-        m.click(".nearby-tabs button[data-place-view='restaurant']")
-        m.wait_for_timeout(600)
-        if m.locator(".place-card").count() == 0:
-            problems.append("모바일 실시간 맛집 목록이 비었습니다")
-        m.eval_on_selector("#nearbySection", "n => n.scrollIntoView({block: 'start'})")
-        m.wait_for_timeout(400)
-        if shots:
-            shot(m, "mobile-live-list")
+        if not quick:
+            # 모바일 실시간 탐색 — 비허브 거점(사당·이수 → 이수역)
+            reset_all(m)
+            add_search(m, "사당역")
+            add_search(m, "이수역")
+            settle(m, 1400)
+            set_stage(m, "full")
+            nearby_ready(m)
+            wait_live(m)
+            if live_status(m) != "ready":
+                problems.append(f"모바일 실시간 조회 결과가 없습니다: {live_status(m)}")
+            if m.locator(".course-card").count() == 0:
+                problems.append("모바일에서 실시간 코스 카드가 없습니다")
+            if m.locator(".nearby").evaluate("node => node.scrollWidth > node.clientWidth + 1"):
+                problems.append("모바일에서 실시간 맛집·카페 섹션이 가로로 넘칩니다")
+            if m.locator(".nearby-head").evaluate("node => node.scrollWidth > node.clientWidth + 1"):
+                problems.append("모바일에서 맛집·카페 헤더(실시간 칩·거점명)가 넘칩니다")
+            m.eval_on_selector("#nearbySection", "n => n.scrollIntoView({block: 'start'})")
+            m.wait_for_timeout(450)
+            if shots:
+                shot(m, "mobile-live-places")
+            m.click(".nearby-tabs button[data-place-view='restaurant']")
+            m.wait_for_timeout(600)
+            if m.locator(".place-card").count() == 0:
+                problems.append("모바일 실시간 맛집 목록이 비었습니다")
+            m.eval_on_selector("#nearbySection", "n => n.scrollIntoView({block: 'start'})")
+            m.wait_for_timeout(400)
+            if shots:
+                shot(m, "mobile-live-list")
 
         if console_errors:
             problems.extend(f"[console] {e}" for e in console_errors)
