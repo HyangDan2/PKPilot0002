@@ -269,7 +269,7 @@ def course_scenario(page, terms, expect_spot: str, shots: bool, problems: list, 
     walk_hrefs = page.locator(".course-actions a").evaluate_all("nodes => nodes.map(n => n.href)")
     if not any(href.endswith("/walk") and "map.naver.com" in href for href in walk_hrefs):
         problems.append(f"[{label}] 네이버 도보 길찾기 링크가 없습니다: {walk_hrefs}")
-    if not any("map.kakao.com" in href and "by=FOOT" in href for href in walk_hrefs):
+    if not any("map.kakao.com" in href and ("by=FOOT" in href or "/link/by/walk/" in href) for href in walk_hrefs):
         problems.append(f"[{label}] 카카오 도보 길찾기 링크가 없습니다: {walk_hrefs}")
 
     # 맛집·카페 탭
