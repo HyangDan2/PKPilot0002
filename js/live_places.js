@@ -223,7 +223,9 @@ export function buildOverpassQuery(lat, lng, radiusKm = LIVE_RADIUS_KM) {
     `  node["amenity"="parking"](around:${radius + PARKING_SEARCH_M},${center});`,
     `  way["amenity"="parking"](around:${radius + PARKING_SEARCH_M},${center});`,
     ');',
-    'out center 400;',
+    // 반경 1~3km 도심은 식당·카페·주차장이 400건을 쉽게 넘는다. 이름 있는 항목만
+    // 받지만, 주차장까지 섞여 앞쪽이 잘리면 목록이 기울어지므로 여유를 둔다.
+    'out center 600;',
   ].join('\n');
 }
 
@@ -367,7 +369,14 @@ export function parseLivePayload(payload, origin, options = {}) {
    ------------------------------------------------------------------ */
 
 const sessionCache = new Map();
-const CACHE_REUSE_M = 300;
+/** 진행 중인 조회 번호 — 늦은 응답이 최신 결과를 덮어쓰지 않게 한다. */
+let liveRequestSeq = 0;
+/** 진행 중인 조회를 끓는 함수 — 새 조회가 시작되면 호출한다. */
+let livePendingAbort = null;
+/** 세션 캐시도 브라우저 저장소와 같이 30분이 지나면 다시 조회한다. */
+const SESSION_TTL_MS = 30 * 60 * 1000;
+/** 캐시를 쓰려면 요청 반경 전체가 예전 조회 결과 안에 들어와야 한다 (km). */
+const CACHE_COVERAGE_EPS_KM = 0.02;
 /** 브라우저 저장소 캐시 — 30분 안에 같은 거점을 다시 보면 네트워크를 쓰지 않는다. */
 const STORE_KEY = 'pkp2.live.v1';
 const STORE_TTL_MS = 30 * 60 * 1000;
@@ -408,25 +417,51 @@ function rememberPersistently(entry) {
 }
 
 export function liveCacheKey(lat, lng, radiusKm = LIVE_RADIUS_KM) {
-  return `${Number(lat).toFixed(3)},${Number(lng).toFixed(3)}@${Number(radiusKm).toFixed(1)}`;
+  return `${Number(lat).toFixed(6)},${Number(lng).toFixed(6)}@${Number(radiusKm).toFixed(1)}`;
 }
 
-/** 같은 세션에서 이미 받아 둔 결과 — 300m 안의 다른 좌표면 재사용한다. */
-export function getCachedLive(lat, lng, radiusKm = LIVE_RADIUS_KM) {
-  const exact = sessionCache.get(liveCacheKey(lat, lng, radiusKm));
+/**
+ * 캐시 재사용 조건 — 예전에 조회한 원의 반경 안에 이번 요청 원이 통째로 들어와야 한다.
+ * 조금 움직였다고(예전 300m 규칙) 같은 결과를 쓰면 반경 끝자락의 장소를 놓친다.
+ */
+function covers(entry, lat, lng, radiusKm) {
+  if (!entry || !entry.origin) return false;
+  if (Number(entry.radiusKm) + CACHE_COVERAGE_EPS_KM < Number(radiusKm)) return false;
+  const moved = haversineKm({ lat, lng }, entry.origin);
+  if (!Number.isFinite(moved)) return false;
+  return moved + Number(radiusKm) <= Number(entry.radiusKm) + CACHE_COVERAGE_EPS_KM;
+}
+
+function freshEntry(entry, now) {
+  if (!entry) return null;
+  const at = Number(entry.at) || 0;
+  if (now - at > SESSION_TTL_MS) return null;
+  return entry;
+}
+
+/** 같은 세션에서 이미 받아 둔 결과 — 요청 원 전체를 덮는 경우에만 재사용한다. */
+export function getCachedLive(lat, lng, radiusKm = LIVE_RADIUS_KM, options = {}) {
+  const now = options.now || Date.now();
+  const exactKey = liveCacheKey(lat, lng, radiusKm);
+  const exact = freshEntry(sessionCache.get(exactKey), now);
   if (exact) return exact;
-  const origin = { lat, lng };
-  for (const entry of sessionCache.values()) {
-    if (entry.radiusKm !== radiusKm) continue;
-    if (haversineKm(origin, entry.origin) * 1000 <= CACHE_REUSE_M) return entry;
+  if (sessionCache.has(exactKey)) sessionCache.delete(exactKey);
+
+  for (const [key, entry] of sessionCache) {
+    if (!freshEntry(entry, now)) {
+      sessionCache.delete(key);
+      continue;
+    }
+    if (Number(entry.radiusKm) !== Number(radiusKm)) continue;
+    if (covers(entry, lat, lng, radiusKm)) return entry;
   }
 
   // 브라우저 저장소 — 지난 방문에서 받아 둔 결과
-  const now = Date.now();
   for (const row of readStore()) {
-    if (!row || row.radiusKm !== radiusKm || !row.origin) continue;
+    if (!row || !row.origin) continue;
     if (now - (row.at || 0) > STORE_TTL_MS) continue;
-    if (haversineKm(origin, row.origin) * 1000 > CACHE_REUSE_M) continue;
+    if (Number(row.radiusKm) !== Number(radiusKm)) continue;
+    if (!covers(row, lat, lng, radiusKm)) continue;
     const entry = {
       origin: row.origin,
       radiusKm: row.radiusKm,
@@ -457,6 +492,8 @@ export function rememberLive(lat, lng, radiusKm, result) {
 
 export function clearLiveCache() {
   sessionCache.clear();
+  liveRequestSeq += 1; // 진행 중인 조회의 늦은 응답도 캐시에 쓰지 않게 한다
+  livePendingAbort = null;
   if (typeof localStorage !== 'undefined') {
     try {
       localStorage.removeItem(STORE_KEY);
@@ -511,6 +548,9 @@ function defaultFetch() {
 /**
  * 반경 radiusKm 안의 실시간 맛집·카페를 가져온다.
  * 반환: { places, source, endpoint, cached, tookMs, attempts }
+ *
+ * 새 조회가 시작되면 이전 조회의 요청을 끊는다(AbortController). 늦게 도착한
+ * 이전 응답은 캐시에 쓰지 않고 stale 로 표시해 최신 결과를 덮어쓰지 못하게 한다.
  */
 export async function loadLivePlaces(options = {}) {
   const lat = Number(options.lat);
@@ -539,6 +579,17 @@ export async function loadLivePlaces(options = {}) {
   const plan = options.plan || liveAttemptPlan(lat, lng, radiusKm);
   const startedAt = Date.now();
   const attempts = [];
+  const requestId = liveRequestSeq + 1;
+  liveRequestSeq = requestId;
+  // 이전 조회는 끊어 네트워크·파싱을 낭비하지 않는다.
+  if (livePendingAbort) {
+    try {
+      livePendingAbort();
+    } catch {
+      /* 이미 끝난 요청 */
+    }
+    livePendingAbort = null;
+  }
 
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -546,6 +597,16 @@ export async function loadLivePlaces(options = {}) {
     let emptyResult = null;
     const controllers = new Set();
     const timers = new Set();
+    const abortSelf = () => {
+      for (const controller of controllers) {
+        try {
+          controller.abort();
+        } catch {
+          /* 이미 끝난 요청 */
+        }
+      }
+    };
+    livePendingAbort = abortSelf;
 
     const cleanup = () => {
       for (const timer of timers) clearTimeout(timer);
@@ -556,6 +617,7 @@ export async function loadLivePlaces(options = {}) {
       if (settled) return;
       settled = true;
       cleanup();
+      if (livePendingAbort === abortSelf) livePendingAbort = null;
       for (const controller of controllers) {
         try {
           controller.abort();
@@ -563,16 +625,19 @@ export async function loadLivePlaces(options = {}) {
           /* 이미 끝난 요청 */
         }
       }
-      if (options.cache !== false && result.places.length) {
+      const stale = requestId !== liveRequestSeq;
+      // 늦게 도착한 이전 조회는 최신 결과를 덮어쓰지 않는다.
+      if (!stale && options.cache !== false && result.places.length) {
         rememberLive(lat, lng, radiusKm, result);
       }
-      resolve({ ...result, tookMs: Date.now() - startedAt, attempts });
+      resolve({ ...result, stale, tookMs: Date.now() - startedAt, attempts });
     };
 
     const fail = () => {
       if (settled) return;
       settled = true;
       cleanup();
+      if (livePendingAbort === abortSelf) livePendingAbort = null;
       reject(new LivePlacesError('live_unavailable', attempts));
     };
 
@@ -587,6 +652,11 @@ export async function loadLivePlaces(options = {}) {
 
     const run = async (attempt) => {
       if (settled) return;
+      if (requestId !== liveRequestSeq) {
+        // 이미 새 조회가 시작된 예전 조회 — 요청을 보내지 않고 끝낸다
+        settleEmpty();
+        return;
+      }
       const controller = new AbortController();
       controllers.add(controller);
       const timer = setTimeout(() => controller.abort(), timeoutMs);

@@ -396,10 +396,10 @@ test('loadLivePlaces: 성공한 결과는 세션 캐시에 담겨 재요청하�
   assertEqual(second.cached, true);
   assertEqual(first.places.length, second.places.length);
   assert(getCachedLive(SADANG.lat, SADANG.lng, 1), '캐시 조회가 안 된다');
-  assertEqual(liveCacheKey(SADANG.lat, SADANG.lng, 1), '37.477,126.982@1.0');
+  assertEqual(liveCacheKey(SADANG.lat, SADANG.lng, 1), '37.476600,126.981600@1.0');
 });
 
-test('loadLivePlaces: 300m 안의 다른 좌표면 캐시를 재사용한다', async () => {
+test('loadLivePlaces: 반경을 덮지 못하는 다른 좌표는 다시 조회한다', async () => {
   clearLiveCache();
   let calls = 0;
   const fetchImpl = async () => {
@@ -407,9 +407,53 @@ test('loadLivePlaces: 300m 안의 다른 좌표면 캐시를 재사용한다', a
     return jsonResponse(overpassFixture());
   };
   await loadLivePlaces({ lat: SADANG.lat, lng: SADANG.lng, radiusKm: 1, fetchImpl, plan: planOf(['https://a.example/1']) });
+  // 0.001도(약 111m) 옮겨도 반경 1km 전체를 덮지 못한다 — 예전 300m 규칙이면 놓치는 장소가 생긴다
   const near = await loadLivePlaces({ lat: SADANG.lat + 0.001, lng: SADANG.lng, radiusKm: 1, fetchImpl, plan: planOf(['https://a.example/1']) });
-  assertEqual(calls, 1, '가까운 좌표에서 캐시를 쓰지 않았다');
-  assertEqual(near.cached, true);
+  assertEqual(calls, 2, '반경을 덮지 못했는데 캐시를 썼다');
+  assertEqual(near.cached, false);
+});
+
+test('getCachedLive: 세션 캐시도 30분이 지나면 버린다', async () => {
+  clearLiveCache();
+  const fetchImpl = async () => jsonResponse(overpassFixture());
+  await loadLivePlaces({ lat: SADANG.lat, lng: SADANG.lng, radiusKm: 1, fetchImpl, plan: planOf(['https://a.example/1']) });
+  assert(getCachedLive(SADANG.lat, SADANG.lng, 1), '방금 담은 캐시가 없다');
+  // 30분 + 1초 뒤
+  const later = Date.now() + 30 * 60 * 1000 + 1000;
+  assertEqual(getCachedLive(SADANG.lat, SADANG.lng, 1, { now: later }), null);
+});
+
+test('loadLivePlaces: 늦게 끝난 이전 조회는 최신 캐시를 덮어쓰지 않는다', async () => {
+  clearLiveCache();
+  const gangnamFixture = {
+    elements: [
+      { type: 'node', id: 11, lat: GANGNAM.lat + 0.0003, lon: GANGNAM.lng, tags: { amenity: 'restaurant', name: '강남 식당' } },
+      { type: 'node', id: 12, lat: GANGNAM.lat, lon: GANGNAM.lng + 0.0004, tags: { amenity: 'cafe', name: '강남 카페' } },
+    ],
+  };
+  const fetchImpl = (url, init) => new Promise((resolve, reject) => {
+    if (url.includes('slow')) {
+      init.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+      return;
+    }
+    resolve(jsonResponse(gangnamFixture));
+  });
+  const oldCall = loadLivePlaces({
+    lat: SADANG.lat, lng: SADANG.lng, radiusKm: 1, fetchImpl,
+    plan: [{ id: 'old', kind: 'overpass', url: 'https://slow.example/1', delayMs: 0, query: 'q' }],
+  });
+  // 이전 조회의 응답이 늦게 오도록 두고, 새 조회를 시작한다
+  const fresh = await loadLivePlaces({
+    lat: GANGNAM.lat, lng: GANGNAM.lng, radiusKm: 1, fetchImpl,
+    plan: [{ id: 'fresh', kind: 'overpass', url: 'https://fast.example/2', delayMs: 0, query: 'q' }],
+  });
+  await oldCall.catch(() => null);
+  assertEqual(fresh.stale, false);
+  assert(fresh.places.length > 0, '새 조회 결과가 비었다');
+  const cached = getCachedLive(GANGNAM.lat, GANGNAM.lng, 1);
+  assert(cached, '새 조회 결과가 캐시에 없다');
+  assertEqual(cached.endpoint, 'https://fast.example/2');
+  assertEqual(getCachedLive(SADANG.lat, SADANG.lng, 1), null, '끊긴 예전 조회가 캐시를 남겼다');
 });
 
 test('loadLivePlaces: 모든 조회가 실패하면 LivePlacesError(시도 기록 포함)', async () => {

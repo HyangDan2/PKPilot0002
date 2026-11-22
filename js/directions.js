@@ -29,31 +29,51 @@ export const isIOS = () => /iPhone|iPad|iPod/i.test(navigator?.userAgent || '');
 
 /* ------------------------------------------------------------------
    길찾기 링크 — { from: 출발지 | null(현위치), to: 목적지, mode }
+
+   카카오맵 공식 규칙 (apis.map.kakao.com)
+   - 앱 스킴: kakaomap://route?sp=위도,경도&ep=위도,경도&by=car|publictransit|foot
+   - 웹 링크: https://map.kakao.com/link/by/{car|traffic|walk}/이름,위도,경도/이름,위도,경도
+     (출발지가 없으면 https://map.kakao.com/link/to/이름,위도,경도 → 현위치 출발)
+   이동 수단 코드는 앱 스킴과 웹 링크가 다르다 — 앱은 publictransit, 웹은 traffic.
    ------------------------------------------------------------------ */
 
-export function kakaoMapUrl({ from, to, travelMode = 'transit' }) {
-  const api = isMobileDevice() ? (isIOS() ? 'https://map.kakao.com/link/url' : 'kakaomap://') : null;
-  if (!api) {
-    // 데스크톱: 웹 카카오맵 길찾기 (파라미터가 없으면 해당 지점 지도만)
-    if (from) {
-      return `https://map.kakao.com/?sName=${encodeURIComponent(from.name)}&eName=${encodeURIComponent(to.name)}`;
-    }
-    return `https://map.kakao.com/link/map/${encodeURIComponent(to.name || '')},${to.lat},${to.lng}`;
-  }
-  const ep = `${to.lat},${to.lng}`;
-  const by = travelMode === 'car' ? 'CAR' : 'TRANSIT';
-  const params = by === 'CAR'
-    ? `route?sp=&ep=${ep}&by=CAR`
-    : `route?sp=&ep=${ep}&by=PUBLIC`;
-  return api + params;
+/** 좌표 표기 — 위도,경도 (딜리미터 없이 반올림해 붙인다) */
+const coord = point => `${num(point.lat)},${num(point.lng)}`;
+const pin = point => `${encodeURIComponent(point.name || '')},${coord(point)}`;
+
+/** 앱 스킴 이동 수단 코드 */
+export const KAKAO_APP_BY = { car: 'car', transit: 'publictransit', walk: 'foot' };
+/** 웹 링크 이동 수단 코드 */
+export const KAKAO_WEB_MODE = { car: 'car', transit: 'traffic', walk: 'walk' };
+
+function modeKey(travelMode) {
+  return travelMode === 'car' ? 'car' : travelMode === 'walk' ? 'walk' : 'transit';
 }
 
+/** kakaomap:// 앱 길찾기 — 출발지·목적지 좌표를 모두 넘긴다. */
+export function kakaoAppUrl({ from, to, travelMode = 'transit' }) {
+  if (!to) return '';
+  const by = KAKAO_APP_BY[modeKey(travelMode)];
+  const dest = `ep=${coord(to)}&by=${by}`;
+  // 출발지가 없으면 앱이 현위치를 출발지로 잡는다 (sp 생략)
+  return from ? `kakaomap://route?sp=${coord(from)}&${dest}` : `kakaomap://route?${dest}`;
+}
+
+/** 앱 미설치·데스크톱 대체 경로 — 카카오맵 웹 길찾기 */
 export function kakaoWebRouteUrl({ from, to, travelMode = 'transit' }) {
-  // 웹 카카오맵: link/to·from은 자동차 경로로 열린다. 대중교통은 이름 검색 길찾기로.
-  if (from) {
-    return `https://map.kakao.com/?sName=${encodeURIComponent(from.name)}&eName=${encodeURIComponent(to.name)}`;
-  }
-  return `https://map.kakao.com/link/to/${encodeURIComponent(to.name || '목적지')},${to.lat},${to.lng}`;
+  if (!to) return 'https://map.kakao.com/';
+  if (!from) return `https://map.kakao.com/link/to/${pin(to)}`;
+  const mode = KAKAO_WEB_MODE[modeKey(travelMode)];
+  return `https://map.kakao.com/link/by/${mode}/${pin(from)}/${pin(to)}`;
+}
+
+/**
+ * 참가자별 길찾기 버튼이 쓰는 입구.
+ * 모바일은 앱 스킴(카카오내비·카카오맵 앱), PC는 웹 길찾기로 보낸다.
+ */
+export function kakaoMapUrl({ from, to, travelMode = 'transit' }) {
+  if (!isMobileDevice()) return kakaoWebRouteUrl({ from, to, travelMode });
+  return kakaoAppUrl({ from, to, travelMode });
 }
 
 export function naverDirectionsUrl({ from, to, travelMode = 'transit' }) {
@@ -62,14 +82,24 @@ export function naverDirectionsUrl({ from, to, travelMode = 'transit' }) {
   return `https://map.naver.com/p/directions/${start}/${naverPin(to.name, to.lat, to.lng)}/${type}`;
 }
 
-/** 카카오맵 웹 길찾기 — by=FOOT 이면 도보 경로로 열린다. */
+/** 카카오맵 웹 길찾기 — 도보 경로로 열린다. */
 export function kakaoWalkRouteUrl({ from, to }) {
-  return `https://map.kakao.com/?sName=${encodeURIComponent(from.name || '출발')}&eName=${encodeURIComponent(to.name || '도착')}&by=FOOT`;
+  return kakaoWebRouteUrl({ from, to, travelMode: 'walk' });
 }
 
-export function tmapRouteUrl({ to }) {
-  // 티맵은 앱 스킴만 있다 — 모바일에서만 노출한다.
-  return `tmap://route?goalname=${encodeURIComponent(to.name || '목적지')}&goalx=${to.lng}&goaly=${to.lat}`;
+/** 티맵 — 앱 스킴만 있다. 출발지를 함께 넘겨야 목적지까지 바로 계산된다. */
+export function tmapRouteUrl({ from, to }) {
+  if (!to) return '';
+  const parts = [];
+  if (from) {
+    parts.push(`startname=${encodeURIComponent(from.name || '출발')}`);
+    parts.push(`startx=${num(from.lng)}`);
+    parts.push(`starty=${num(from.lat)}`);
+  }
+  parts.push(`goalname=${encodeURIComponent(to.name || '목적지')}`);
+  parts.push(`goalx=${num(to.lng)}`);
+  parts.push(`goaly=${num(to.lat)}`);
+  return `tmap://route?${parts.join('&')}`;
 }
 
 export const PROVIDERS = {
@@ -79,6 +109,7 @@ export const PROVIDERS = {
     icon: 'i-nav-kakao',
     web: kakaoWebRouteUrl,
     app: kakaoMapUrl,
+    appScheme: 'kakaomap://',
     appOnly: false,
   },
   naver: {
@@ -93,8 +124,9 @@ export const PROVIDERS = {
     label: '티맵',
     carLabel: '티맵내비',
     icon: 'i-nav-tmap',
-    web: null,          // 웹 페이지가 없다 — 모바일 앱 스킴만
+    web: null,          // 앱 스킴만 있다 — 모바일에서 카카오·네이버 웹 링크로 대체한다
     app: tmapRouteUrl,
+    appScheme: 'tmap://',
     appOnly: true,
   },
 };

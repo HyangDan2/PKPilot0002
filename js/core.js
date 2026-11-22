@@ -129,6 +129,7 @@ export function geometricMedian(points, options = {}) {
 
   const maxIterations = options.maxIterations ?? 300;
   const tolerance = options.tolerance ?? 1e-7; // km
+  const coincideEps = options.coincideEps ?? 1e-9; // km — 입력점과 같은 자리로 본 거리
   const originLat = pts.reduce((s, p) => s + p.lat, 0) / pts.length;
   const projected = pts.map(p => project(p, originLat));
 
@@ -139,26 +140,41 @@ export function geometricMedian(points, options = {}) {
     let numX = 0;
     let numY = 0;
     let den = 0;
-    let exact = null;
+    // 반복 중심과 겹치는 입력점(η)과, 나머지 점들이 중심을 미는 방향 합(‖R‖)
+    let coincident = 0;
+    let pullX = 0;
+    let pullY = 0;
     for (const p of projected) {
-      const d = Math.hypot(p.x - cx, p.y - cy);
-      if (d < 1e-9) {
-        exact = p;
-        break;
+      const dx = p.x - cx;
+      const dy = p.y - cy;
+      const d = Math.hypot(dx, dy);
+      if (d <= coincideEps) {
+        coincident += 1;
+        continue;
       }
       const w = 1 / d;
       numX += p.x * w;
       numY += p.y * w;
       den += w;
+      pullX += dx / d;
+      pullY += dy / d;
     }
-    if (exact) {
-      // 입력 지점 위에 정확히 떨어진 경우: 그 지점이 곧 중앙값이다.
-      const at = unproject(exact, originLat);
-      return { lat: at.lat, lng: at.lng };
+    if (den <= 0) break; // 모든 입력점이 한 자리 — 그 자리가 답이다
+
+    const plainX = numX / den;
+    const plainY = numY / den;
+    let nx = plainX;
+    let ny = plainY;
+    if (coincident > 0) {
+      // 수정 Weiszfeld (Vardi–Zhang): 입력점 위에 떨어졌을 때
+      // ‖R‖ ≤ η 이면 그 자리가 이미 최적이므로 반복을 멈추고 후보 비교로 넘긴다.
+      const pull = Math.hypot(pullX, pullY);
+      if (pull <= coincident + 1e-12) break;
+      const t = Math.min(1, coincident / pull); // 중심에 남는 비중
+      nx = (1 - t) * plainX + t * cx;
+      ny = (1 - t) * plainY + t * cy;
     }
-    if (den <= 0) break;
-    const nx = numX / den;
-    const ny = numY / den;
+
     const moved = Math.hypot(nx - cx, ny - cy);
     cx = nx;
     cy = ny;
@@ -166,14 +182,16 @@ export function geometricMedian(points, options = {}) {
   }
 
   const result = unproject({ x: cx, y: cy }, originLat);
-  // 데이터 지점 자체가 최적점인 경우(중복 좌표 등) 보정:
-  // 입력점에서의 총거리가 더 짧으면 그 점을 쓴다.
+  // 최적성 확인 — 반복 결과와 입력점 후보의 총거리를 직접 비교한다.
+  // (입력점이 최적점인 경우가 흔하다: 같은 자리가 여러 명이거나 외딴 점 하나뿐일 때)
   let best = result;
   let bestCost = totalDistanceKm(result, pts);
-  for (const p of pts) {
-    const cost = totalDistanceKm(p, pts);
-    if (cost < bestCost - 1e-6) {
-      best = { lat: p.lat, lng: p.lng };
+  const candidates = [sphericalCentroid(pts), ...pts];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const cost = totalDistanceKm(candidate, pts);
+    if (cost < bestCost - 1e-9) {
+      best = { lat: candidate.lat, lng: candidate.lng };
       bestCost = cost;
     }
   }
@@ -357,8 +375,8 @@ export function decodeParticipants(raw) {
   return { points, skipped };
 }
 
-/** 'p=..&n=..&m=..&t=..' 형태의 질의 문자열을 만든다. */
-export function buildShareQuery(points, mode = 'fair', travelMode = 'transit') {
+/** 'p=..&n=..&m=..&t=..&a=..' 형태의 질의 문자열을 만든다. */
+export function buildShareQuery(points, mode = 'fair', travelMode = 'transit', carAnchor = 'auto') {
   const list = (points || []).filter(Boolean);
   // 좌표는 숫자·쉼표·파이프뿐이라 인코딩하지 않는다 (?p=37.566,126.978|37.517,127.047)
   const parts = [`p=${encodeParticipants(list)}`];
@@ -366,18 +384,22 @@ export function buildShareQuery(points, mode = 'fair', travelMode = 'transit') {
   const usesCustomName = list.some((p, i) => p.name && p.name !== DEFAULT_NAMES(i));
   if (usesCustomName) parts.push(`n=${encodeURIComponent(names.join('~'))}`);
   if (mode && mode !== 'fair') parts.push(`m=${encodeURIComponent(mode)}`);
-  if (travelModeOf(travelMode) === 'car') parts.push('t=car');
+  if (travelModeOf(travelMode) === 'car') {
+    parts.push('t=car');
+    // 자차 만남 기준까지 함께 실어 보낸다 — 받은 사람이 같은 결과를 보도록
+    if (carAnchor === 'center' || carAnchor === 'highway') parts.push(`a=${carAnchor}`);
+  }
   return parts.join('&');
 }
 
 /** 공유 링크: 기존 쿼리·해시를 지우고 상태만 남긴다. */
-export function buildShareUrl(href, points, mode = 'fair', travelMode = 'transit') {
+export function buildShareUrl(href, points, mode = 'fair', travelMode = 'transit', carAnchor = 'auto') {
   const url = new URL(href);
   url.hash = '';
   url.search = '';
   const cleanPath = url.pathname.replace(/index\.html?$/i, '');
   url.pathname = cleanPath;
-  const query = buildShareQuery(points, mode, travelMode);
+  const query = buildShareQuery(points, mode, travelMode, carAnchor);
   return `${url.origin}${url.pathname}${query ? `?${query}` : ''}`;
 }
 
@@ -406,7 +428,7 @@ function parseQueryTokens(str) {
  * 유효하지 않은 좌표는 건너뛰고 개수를 센다.
  */
 export function parseShareState(input) {
-  const result = { points: [], mode: 'fair', travelMode: 'transit', skipped: 0, present: false };
+  const result = { points: [], mode: 'fair', travelMode: 'transit', carAnchor: 'auto', skipped: 0, present: false };
   if (typeof input !== 'string' || !input.trim()) return result;
 
   let rest = input.trim();
@@ -444,6 +466,12 @@ export function parseShareState(input) {
 
   const travel = get('t');
   if (travel) result.travelMode = travelModeOf(travel);
+
+  // 자차 만남 기준 — 대중교통 링크에는 의미가 없으므로 자차일 때만 살린다
+  const anchor = get('a');
+  if (result.travelMode === 'car' && (anchor === 'center' || anchor === 'highway')) {
+    result.carAnchor = anchor;
+  }
 
   return result;
 }

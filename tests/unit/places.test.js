@@ -210,15 +210,14 @@ test('naverDirectionsUrl: 자차·대중교통 구간 표기 유지', () => {
   assert(transit.endsWith('/transit'));
 });
 
-test('kakaoWalkRouteUrl: sName·eName·by=FOOT', () => {
+test('kakaoWalkRouteUrl: 공식 웹 길찾기(/link/by/walk/출발지/목적지)', () => {
   const url = kakaoWalkRouteUrl({
     from: { name: '1차 식당', lat: 37.5, lng: 127 },
     to: { name: '2차 카페', lat: 37.502, lng: 127.002 },
   });
-  assert(url.startsWith('https://map.kakao.com/?'), url);
-  assert(url.includes('by=FOOT'), url);
-  assert(url.includes(`sName=${encodeURIComponent('1차 식당')}`), url);
-  assert(url.includes(`eName=${encodeURIComponent('2차 카페')}`), url);
+  assert(url.startsWith('https://map.kakao.com/link/by/walk/'), url);
+  assert(url.includes(`${encodeURIComponent('1차 식당')},37.5,127`), url);
+  assert(url.includes(`${encodeURIComponent('2차 카페')},37.502,127.002`), url);
 });
 
 /* ------------------------------------------------------------------

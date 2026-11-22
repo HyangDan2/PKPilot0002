@@ -192,6 +192,44 @@ test('median: 한 점만 있으면 그 점, 빈 입력은 null', () => {
   assertEqual(geometricMedian([]), null);
 });
 
+/* 회귀 — 입력점과 반복 중심이 겹칠 때 최적성 확인 없이 그 점을 돌려주던 오류.
+   같은 위도의 네 점 + 서쪽 외딴 점 하나. 참가자 5명이면 거리 합 최소점은
+   정렬했을 때 세 번째 점(127.01)이다. */
+test('median: 입력점 위에 떨어져도 거리 합이 최소인 점을 고른다', () => {
+  const points = [
+    { lat: 37, lng: 127.00 },
+    { lat: 37, lng: 127.01 },
+    { lat: 37, lng: 127.02 },
+    { lat: 37, lng: 127.03 },
+    { lat: 37, lng: 126.94 },
+  ];
+  const m = geometricMedian(points);
+  assertFinitePoint(m);
+  const cost = p => points.reduce((s, q) => s + haversineKm(p, q), 0);
+  const best = cost(m);
+  assertClose(m.lat, 37, 1e-4);
+  assertClose(m.lng, 127.01, 1e-4);
+  points.forEach((p, i) => {
+    assert(best <= cost(p) + 1e-6, `입력점 ${i}보다 거리 합이 크다: ${best} vs ${cost(p)}`);
+  });
+  // 후보 비교만 하고 끝나지 않았는지 — 주변 격자점보다도 나쁘면 안 된다
+  for (const step of [-0.02, -0.01, -0.005, 0, 0.005, 0.01, 0.02]) {
+    const probe = { lat: 37, lng: 127.01 + step };
+    assert(best <= cost(probe) + 1e-6, `127.01 주변보다 나쁘다: ${best} vs ${cost(probe)}`);
+  }
+});
+
+test('median: 같은 자리 여러 명 + 먼 한 명도 최적점을 고른다', () => {
+  const a = { lat: 37.5, lng: 127.0 };
+  const far = { lat: 37.9, lng: 127.6 };
+  const m = geometricMedian([a, a, far]);
+  assertFinitePoint(m);
+  const cost = p => [a, a, far].reduce((s, q) => s + haversineKm(p, q), 0);
+  assertClose(m.lat, a.lat, 1e-3);
+  assertClose(m.lng, a.lng, 1e-3);
+  assert(cost(m) <= cost(a) + 1e-6);
+});
+
 test('midpoint: 세 가지 모드가 서로 다른 지점을 준다', () => {
   const points = [CITY_HALL, GANGNAM, JONGNO3, PANGYO];
   const fair = midpoint(points, 'fair');
@@ -447,6 +485,28 @@ test('URL 상태: 자차 모드는 t=car로 왕복한다', () => {
   const back = buildShareQuery([GANGNAM, HONGDAE], 'fair', 'transit');
   assert(!back.includes('t='), `대중교통 기본값인데 t=가 남았다: ${back}`);
   assertEqual(parseShareState(`?${back}`).travelMode, 'transit');
+});
+
+/* 회귀 — 공유 링크가 이동 수단만 싣고 자차 만남 기준(carAnchor)을 빠뜨려
+   받은 사람이 다른 거점을 보던 문제 */
+test('URL 상태: 자차 만남 기준이 공유 링크로 왕복한다', () => {
+  const highway = buildShareUrl('https://hyangdan2.github.io/PKPilot0002/', [GANGNAM, HONGDAE], 'median', 'car', 'highway');
+  assert(highway.includes('t=car'), highway);
+  assert(highway.includes('a=highway'), highway);
+  const parsedHighway = parseShareState(highway);
+  assertEqual(parsedHighway.travelMode, 'car');
+  assertEqual(parsedHighway.carAnchor, 'highway');
+  assertEqual(parsedHighway.mode, 'median');
+
+  const center = buildShareUrl('https://hyangdan2.github.io/PKPilot0002/', [GANGNAM, HONGDAE], 'fair', 'car', 'center');
+  assertEqual(parseShareState(center).carAnchor, 'center');
+
+  // auto 는 URL 에 쓰지 않고, 대중교통 링크의 a= 는 무시한다
+  const auto = buildShareQuery([GANGNAM, HONGDAE], 'fair', 'car');
+  assert(!auto.includes('a='), auto);
+  assertEqual(parseShareState(`?p=37.5,127.0&t=car`).carAnchor, 'auto');
+  assertEqual(parseShareState(`?p=37.5,127.0&a=highway`).carAnchor, 'auto');
+  assertEqual(parseShareState(`?${auto}`).carAnchor, 'auto');
 });
 
 /* ------------------------------------------------------------------

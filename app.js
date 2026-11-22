@@ -31,26 +31,26 @@ import {
   travelModeOf,
   walkMinutesForMeters,
   walkingMinutes,
-} from './js/core.js?v=20261116-ux4b';
+} from './js/core.js?v=20261122-wo11';
 import {
   LIVE_RADIUS_KM,
   MAX_LIVE_RADIUS_KM,
   loadLivePlaces,
   needsLiveSearch,
-} from './js/live_places.js?v=20261116-ux4b';
+} from './js/live_places.js?v=20261122-wo11';
 import { LINES, STATIONS } from './js/stations.js';
 import { DRIVING_SPOTS, ROADS } from './js/driving_spots.js';
 import { LANDMARKS } from './js/landmarks.js';
 import { HUBS, PLACES } from './js/places.js';
 import {
   PROVIDERS,
-  isIOS,
   isMobileDevice,
   kakaoWalkRouteUrl,
   naverDirectionsUrl,
   placeSearchUrl,
   providerList,
-} from './js/directions.js';
+} from './js/directions.js?v=20261122-wo11';
+import { geocoder } from './js/geocode.js?v=20261122-wo11';
 
 /* ------------------------------------------------------------------
    상수
@@ -296,7 +296,10 @@ function clearLayer(layer) {
   });
   layers[layer].clear();
   if (layer !== 'person') {
-    tapHandlers.clear();
+    // 이 레이어에서 발급한 탭 처리기만 지운다 — 다른 레이어(거점·코스 핀)의
+    // 처리기까지 지우면 장소를 확인한 뒤 거점 핀을 눌러도 반응하지 않는다.
+    (layerTaps[layer] || new Set()).forEach(id => tapHandlers.delete(id));
+    if (layerTaps[layer]) layerTaps[layer].clear();
     closeInfo();
   }
 }
@@ -363,14 +366,18 @@ function htmlMarker(layer, { lat, lng, html, size = [1, 1], anchor = [0, 0], zIn
    #map 에 위임 리스너 하나만 붙인다 (핀 드래그 · 알약/코스 핀 탭 · 활성 선택).
    ------------------------------------------------------------------ */
 const tapHandlers = new Map();
+// 레이어별 탭 처리기 id — 레이어를 걷어낼 때 그 레이어 것만 해제한다.
+const layerTaps = { person: new Set(), overlay: new Set(), focus: new Set() };
 let tapSeq = 0;
 let pinDrag = null;
 
 // 탭 대상이 될 content 에 붙일 id 를 발급하고 처리기를 보관한다.
-function registerTap(handler) {
+function registerTap(layer, handler) {
   tapSeq += 1;
   const id = `tap${tapSeq}`;
   tapHandlers.set(id, handler);
+  const bucket = layerTaps[layer] || layerTaps.overlay;
+  bucket.add(id);
   return id;
 }
 
@@ -405,7 +412,7 @@ function installMapInteractions() {
     point.lat = coord.lat();
     point.lng = coord.lng();
     markers.get(point.id)?.setPosition(coord);
-    updateOverlaysOnly();
+    scheduleDragUpdate();
     scheduleLightResult();
     event.preventDefault();
   }, { passive: false });
@@ -487,11 +494,9 @@ function addPoint({ lat, lng, name, address, source = 'other' }) {
     toast(`최대 ${MAX_PARTICIPANTS}명까지 추가할 수 있어요`);
     return null;
   }
-  const duplicate = state.points.find(p => haversineKm(p, { lat, lng }) < 0.02);
-  if (duplicate) {
-    toast('이미 같은 자리에 참가자가 있어요');
-    return null;
-  }
+  // 같은 자리(20m 이내)에 이미 참가자가 있어도 막지 않는다 — 같은 건물에서
+  // 출발하는 두 사람을 한 명으로 합쳐 버리면 공평도 계산이 틀어진다. 안내만 한다.
+  const nearbyPoint = state.points.find(p => haversineKm(p, { lat, lng }) < 0.02);
   const point = makePoint(lat, lng, name);
   if (address) {
     point.address = address;
@@ -501,6 +506,9 @@ function addPoint({ lat, lng, name, address, source = 'other' }) {
   state.activeId = point.id;
   state.lastInput = source === 'map' ? 'map' : 'other';
   if (!address) requestAddress(point);
+  if (nearbyPoint) {
+    toast('같은 자리에 참가자를 한 명 더 넣었어요 — 같은 곳에서 출발하는 사람이면 그대로 두세요', 3400);
+  }
 
   fitAll();
   scheduleRender();
@@ -535,11 +543,9 @@ function resetAll() {
 }
 
 /* ------------------------------------------------------------------
-   주소 (Nominatim) — 1초 간격 큐
+   주소 — geocode.js 어댑터 (Nominatim 큐 + Photon 대체)
+   역주소와 주소 검색이 하나의 레이트 리미터·캐시·타임아웃을 함께 쓴다.
    ------------------------------------------------------------------ */
-const geoCache = new Map();
-let geoChain = Promise.resolve();
-let lastGeoAt = 0;
 
 /* 주소 캐시 — 한 번 받은 주소는 브라우저에 남겨 두고 다음 방문에 0ms 로 쓴다. */
 const GEO_STORE_KEY = 'pkp2.geo.v1';
@@ -575,61 +581,27 @@ function saveGeoStore() {
   }
 }
 
-function queueGeocode(task) {
-  const run = geoChain.then(async () => {
-    const wait = Math.max(0, 1050 - (Date.now() - lastGeoAt));
-    if (wait) await new Promise(resolve => setTimeout(resolve, wait));
-    lastGeoAt = Date.now();
-    return task();
-  });
-  geoChain = run.catch(() => {});
-  return run;
-}
-
 function requestAddress(point) {
   const key = `${point.lat.toFixed(4)},${point.lng.toFixed(4)}`;
-  if (geoCache.has(key)) {
-    applyAddress(point, geoCache.get(key));
-    return;
-  }
   const stored = addressStore.get(key);
   if (stored && stored.text) {
     // 이전 방문에서 받아 둔 주소 — 네트워크 없이 바로 채운다
-    geoCache.set(key, stored.text);
     applyAddress(point, stored.text);
     return;
   }
   point.addressState = 'loading';
-  queueGeocode(async () => {
-    try {
-      const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${point.lat.toFixed(6)}&lon=${point.lng.toFixed(6)}&zoom=18&addressdetails=1&accept-language=ko`;
-      const response = await fetch(url, { headers: { Accept: 'application/json' } });
-      if (!response.ok) throw new Error(String(response.status));
-      const data = await response.json();
-      const text = describeAddress(data);
-      geoCache.set(key, text);
-      if (text) {
-        addressStore.set(key, { text, at: Date.now() });
-        saveGeoStore();
-      }
-      applyAddress(point, text);
-    } catch {
-      applyAddress(point, '');
+  const origin = { lat: point.lat, lng: point.lng };
+  geocoder.reverse(origin).then(result => {
+    // 그 사이 참가자가 지워졌거나 다른 자리로 끌렸으면 건드리지 않는다.
+    if (!state.points.includes(point)) return;
+    if (point.lat !== origin.lat || point.lng !== origin.lng) return;
+    const text = result?.text || '';
+    if (text) {
+      addressStore.set(key, { text, at: Date.now() });
+      saveGeoStore();
     }
+    applyAddress(point, text);
   });
-}
-
-function describeAddress(data) {
-  if (!data) return '';
-  const a = data.address || {};
-  const city = a.city || a.province || a.state || '';
-  const district = a.borough || a.county || a.city_district || a.district || '';
-  const block = a.suburb || a.quarter || a.neighbourhood || a.town || a.village || '';
-  const road = a.road || a.pedestrian || a.residential || '';
-  const parts = [city, district, block, road].filter((v, i, arr) => v && arr.indexOf(v) === i);
-  const joined = parts.join(' ');
-  if (joined) return joined;
-  return (data.name || data.display_name || '').split(',').slice(0, 2).join(', ').trim();
 }
 
 function applyAddress(point, text) {
@@ -779,34 +751,29 @@ async function runSearch(term) {
   if (!query) return;
   el.searchBtn.disabled = true;
   const token = ++searchToken;
-  // 주소 검색은 응답이 늦을 수 있다 — 먼저 '찾는 중'을 보여 주고 8초 뒤에는 포기한다.
+  // 주소 검색은 응답이 늦을 수 있다 — 먼저 '찾는 중'을 보여 준다.
   renderSearchRows([], { empty: '주소·장소 검색 중…' });
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8000);
   try {
-    const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(query)}&limit=5&accept-language=ko&addressdetails=1`;
-    const response = await fetch(url, { headers: { Accept: 'application/json' }, signal: controller.signal });
-    if (!response.ok) throw new Error(String(response.status));
-    const data = await response.json();
+    const found = await geocoder.search(query);
     if (token !== searchToken) return;
-    const rows = data.map(item => ({
-      name: item.name || (item.display_name || '').split(',')[0],
-      address: (item.display_name || '').split(',').slice(0, 3).join(' ').trim(),
+    const rows = (found || []).map(item => ({
+      name: item.name,
+      address: item.address,
       lat: Number(item.lat),
-      lng: Number(item.lon),
+      lng: Number(item.lng),
       kind: 'remote',
       lines: [],
-    })).filter(item => Number.isFinite(item.lat) && Number.isFinite(item.lng));
+    })).filter(item => item.name && Number.isFinite(item.lat) && Number.isFinite(item.lng));
+    // Nominatim 이 막혔거나 결과가 없으면 Photon 으로 한 번 더 — 어댑터가 이미 처리했다.
     renderSearchRows(rows, { empty: `‘${query}’ 주소를 찾지 못했어요. 지도에서 직접 찍어 보세요.` });
-  } catch {
+  } catch (error) {
     if (token !== searchToken) return;
-    renderSearchRows([], {
-      empty: controller.signal.aborted
-        ? '검색이 너무 오래 걸려 중단했어요 — 잠시 뒤 다시 시도하거나 지도에서 직접 찍어 주세요.'
-        : '검색에 실패했어요. 잠시 후 다시 시도해 주세요.',
-    });
+    const code = error?.code || '';
+    let message = '검색에 실패했어요. 잠시 후 다시 시도해 주세요.';
+    if (code === 'timeout') message = '검색이 너무 오래 걸렸어요 — 잠시 뒤 다시 시도하거나 지도에서 직접 찍어 주세요.';
+    else if (code === 'search_unavailable') message = '검색 서버가 지금 붐비네요 — 지도에서 직접 찍거나 잠시 뒤 다시 시도해 주세요.';
+    renderSearchRows([], { empty: message });
   } finally {
-    clearTimeout(timer);
     if (token === searchToken) el.searchBtn.disabled = false;
   }
 }
@@ -860,7 +827,11 @@ function computeResult() {
   // 맛집·카페·코스의 기준이 되는 거점 — 추천 거점이 없으면 가장 가까운 역으로 후퇴
   const anchor = rec?.primary || (rec ? nearestStations(rec.center, SPOTS, 1, Infinity)[0] : null);
   const nearby = anchor ? buildNearby(anchor) : null;
-  return { center, distances, stats, fairness, rec, anchor, nearby };
+  // 실제 만날 거점 기준 거리·공평도 — 계산상의 중심점(center) 기준과 나눠 보여준다.
+  const spotDistances = rec?.primary?.distances || (anchor ? distancesKm(anchor, points) : null);
+  const spotStats = spotDistances ? distanceStats(spotDistances) : null;
+  const spotFairness = spotDistances ? fairnessScore(spotDistances) : null;
+  return { center, distances, stats, fairness, rec, anchor, nearby, spotDistances, spotStats, spotFairness };
 }
 
 /* ------------------------------------------------------------------
@@ -963,26 +934,81 @@ async function startLiveJob(anchor) {
 /* ------------------------------------------------------------------
    렌더 — 목록
    ------------------------------------------------------------------ */
-function renderList(result) {
-  el.list.innerHTML = state.points.map((point, i) => {
-    const color = PALETTE[i % PALETTE.length];
-    const distance = result && state.points.length >= 2 ? result.distances[i] : null;
-    const km = distance === null || !Number.isFinite(distance)
-      ? '<span class="p-km is-off">—</span>'
-      : `<span class="p-km">${formatKm(distance)}</span>`;
-    return `
-      <li class="participant${point.id === state.activeId ? ' is-active' : ''}" data-id="${point.id}">
+function listRowHtml(point, i, result) {
+  const color = PALETTE[i % PALETTE.length];
+  const distance = result && state.points.length >= 2 ? result.distances[i] : null;
+  const km = distance === null || !Number.isFinite(distance)
+    ? '<span class="p-km is-off">—</span>'
+    : `<span class="p-km">${formatKm(distance)}</span>`;
+  return `
         <span class="p-dot" style="--c:${color}">${i + 1}</span>
         <span class="p-body">
-          <input class="p-name" value="${esc(point.name)}" data-name="${point.id}" maxlength="24" aria-label="참가자 ${i + 1} 이름" />
+          <input class="p-name" value="${esc(point.name)}" data-name="${point.id}" maxlength="24" aria-label="참가자 ${i + 1} 이름" autocomplete="off" />
           <span class="p-addr" data-addr="${point.id}" title="${esc(addressLabel(point))}">${esc(addressLabel(point))}</span>
         </span>
         ${km}
         <button class="p-del" type="button" data-del="${point.id}" aria-label="참가자 ${i + 1} 삭제" title="삭제">
           <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-trash"/></svg>
-        </button>
-      </li>`;
-  }).join('');
+        </button>`;
+}
+
+/** 기존 행을 다시 쓰면서 값만 고친다 — 입력 중인 이름 칸의 포커스·커서·한글 조합을 끊지 않는다. */
+function updateListRow(li, point, i, result) {
+  const color = PALETTE[i % PALETTE.length];
+  const dot = li.querySelector('.p-dot');
+  if (dot) {
+    dot.style.setProperty('--c', color);
+    if (dot.textContent !== String(i + 1)) dot.textContent = String(i + 1);
+  }
+  const input = li.querySelector('[data-name]');
+  if (input) {
+    // 타이핑 중인 칸은 건드리지 않는다 (IME 조합·커서 보존)
+    if (document.activeElement !== input && input.value !== point.name) input.value = point.name;
+    input.dataset.name = point.id;
+    input.setAttribute('aria-label', `참가자 ${i + 1} 이름`);
+  }
+  const addr = li.querySelector('.p-addr');
+  if (addr) {
+    const label = addressLabel(point);
+    if (addr.textContent !== label) addr.textContent = label;
+    if (addr.getAttribute('title') !== label) addr.setAttribute('title', label);
+    addr.dataset.addr = point.id;
+  }
+  const km = li.querySelector('.p-km');
+  if (km) {
+    const distance = result && state.points.length >= 2 ? result.distances[i] : null;
+    const text = distance === null || !Number.isFinite(distance) ? '—' : formatKm(distance);
+    if (km.textContent !== text) km.textContent = text;
+    km.classList.toggle('is-off', text === '—');
+  }
+  const del = li.querySelector('[data-del]');
+  if (del) {
+    del.dataset.del = point.id;
+    del.setAttribute('aria-label', `참가자 ${i + 1} 삭제`);
+  }
+  li.dataset.id = point.id;
+  li.classList.toggle('is-active', point.id === state.activeId);
+}
+
+function renderList(result) {
+  const existing = new Map([...el.list.querySelectorAll('.participant')].map(li => [li.dataset.id, li]));
+
+  state.points.forEach((point, i) => {
+    let li = existing.get(point.id);
+    if (li) {
+      existing.delete(point.id);
+    } else {
+      li = document.createElement('li');
+      li.className = 'participant';
+      li.dataset.id = point.id;
+      li.innerHTML = listRowHtml(point, i, result);
+    }
+    if (el.list.children[i] !== li) el.list.insertBefore(li, el.list.children[i] || null);
+    updateListRow(li, point, i, result);
+  });
+
+  // 지워진 참가자의 행
+  existing.forEach(li => li.remove());
 
   el.count.textContent = String(state.points.length);
   el.emptyHint.hidden = state.points.length > 0;
@@ -1054,9 +1080,15 @@ function directionLinks(spot) {
     const color = PALETTE[i % PALETTE.length];
     const links = providerList(travelMode).map(key => {
       const provider = PROVIDERS[key];
+      // 티맵처럼 앱 스킴만 있는 제공자는 PC에서 보여주지 않는다 (길이 죽은 버튼이 된다)
+      if (provider.appOnly && !isMobileDevice()) return '';
       const url = provider.app({ from: point, to: spot, travelMode });
+      const webUrl = provider.web ? provider.web({ from: point, to: spot, travelMode }) : '';
+      const fallback = provider.appScheme && url.startsWith(provider.appScheme) && webUrl
+        ? ` data-app-fallback="${esc(webUrl)}"`
+        : '';
       const label = travelMode === 'car' ? provider.carLabel : provider.label;
-      return `<a class="nav-chip" href="${esc(url)}" target="_blank" rel="noopener noreferrer" title="${esc(point.name)} → ${esc(spot.name)} ${esc(label)} 길찾기">${esc(label)}</a>`;
+      return `<a class="nav-chip" href="${esc(url)}"${fallback} target="_blank" rel="noopener noreferrer" title="${esc(point.name)} → ${esc(spot.name)} ${esc(label)} 길찾기">${esc(label)}</a>`;
     }).join('');
     return `
       <div class="dir-row">
@@ -1080,9 +1112,9 @@ function driveMinutes(km) {
 
 /** 중심↔거점 이동 표기 — 도보 90분을 넘으면 광역 환승 거점이므로 도보 대신 접근 수단을 알려준다. */
 function approachLabel(km, car) {
-  if (car) return `차로 <b>${driveMinutes(km)}</b>`;
+  if (car) return `차로 <b>${driveMinutes(km)}</b> <span class="est">· 직선 예상</span>`;
   const walk = walkingMinutes(km);
-  return walk > 90 ? '<b>KTX·버스로 접근</b>' : `도보 <b>${walk}분</b>`;
+  return walk > 90 ? '<b>KTX·버스로 접근</b>' : `도보 <b>${walk}분</b> <span class="est">· 직선 예상</span>`;
 }
 
 /* ------------------------------------------------------------------
@@ -1350,6 +1382,8 @@ function renderResult(result) {
   const score = result.fairness ?? 0;
   const grade = fairnessGrade(score);
   const stats = result.stats;
+  const spotScore = result.spotFairness;
+  const spotStats = result.spotStats;
   const rec = result.rec;
   const primary = rec?.primary || null;
   const alternative = rec?.alternative || null;
@@ -1386,13 +1420,14 @@ function renderResult(result) {
     <div class="card station-card ${car ? 'is-car' : ''}${exact ? ' is-exact' : ''}">
       <div class="station-top">
         <span class="station-kicker"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#${car ? 'i-car' : 'i-train'}"/></svg>${primary ? kindKicker(station) : '가장 가까운 곳'}</span>
-        <span class="station-dist">${exact ? '참가자 평균 위치' : `중심에서 ${formatKm(primary ? primary.km : station.km)}`}</span>
+        <span class="station-dist">${exact ? '참가자 평균 위치' : `중심점에서 ${formatKm(primary ? primary.km : station.km)}`}</span>
       </div>
       <div class="station-name">${esc(station.name)} ${car ? spotBadges(station) : (car ? '' : lineBadges(station.lines))}</div>
       <div class="station-actions">
         <div class="station-meta">
           <span>${exact ? '시내·주차 기준' : approachLabel(primary ? primary.km : station.km, car)}</span>
-          <span>가장 먼 참가자 <b>${formatKm(stats.max)}</b></span>
+          <span>${spotStats ? `거점까지 가장 먼 참가자 <b>${formatKm(spotStats.max)}</b>` : `가장 먼 참가자 <b>${formatKm(stats.max)}</b>`}</span>
+          ${Number.isFinite(spotScore) ? `<span>거점 기준 공평도 <b>${Math.round(spotScore)}%</b></span>` : ''}
         </div>
         <button class="mini-btn" type="button" data-focus-lat="${station.lat}" data-focus-lng="${station.lng}">
           <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-target"/></svg>지도에서
@@ -1422,13 +1457,14 @@ function renderResult(result) {
           <div class="ring-inner"><b>${Math.round(score)}</b><span>FAIRNESS</span></div>
         </div>
         <div class="fair-copy" data-tone="${grade.tone}">
-          <h3><span class="dot"></span>공평도 ${Math.round(score)}% · ${grade.label}</h3>
-          <p>${grade.hint}${stats ? ` · 최대 격차 ${kmHtml(stats.spread)}` : ''}</p>
+          <h3><span class="dot"></span>중심점 공평도 ${Math.round(score)}%</h3>
+          <p><b>${grade.label}</b> · ${grade.hint}${stats ? ` · 최대 격차 ${kmHtml(stats.spread)}` : ''}</p>
           <div class="fair-stats">
             <div><b>${state.points.length}명</b><span>참가자</span></div>
-            <div><b>${formatKm(stats.mean)}</b><span>평균 거리</span></div>
-            <div><b>${formatKm(stats.max)}</b><span>가장 먼 거리</span></div>
+            <div><b>${formatKm(stats.mean)}</b><span>평균 거리(중심점)</span></div>
+            <div><b>${formatKm(stats.max)}</b><span>가장 먼 거리(중심점)</span></div>
           </div>
+          <p class="fair-basis">공평도·거리 통계는 계산된 중심점 기준이에요. 실제로 만날 거점에서의 거리와 공평도는 아래 거점 카드에 따로 표시해요.</p>
         </div>
       </div>
       <div class="mode-switch" role="group" aria-label="계산 방식">
@@ -1445,12 +1481,12 @@ function renderResult(result) {
     ${alternative ? `
       <div class="alt-station">
         <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#${car ? 'i-car' : 'i-train'}"/></svg>
-        <span>더 공평한 ${car ? '거점' : '역'} <b>${esc(alternative.name)}</b> · 가장 먼 참가자 ${kmHtml(alternative.maxKm)}</span>
+        <span>더 공평한 ${car ? '거점' : '역'} <b>${esc(alternative.name)}</b> · 거점 기준 가장 먼 참가자 ${kmHtml(alternative.maxKm)}</span>
         <span class="alt-km">중심에서 ${formatKm(alternative.km)}</span>
       </div>` : ''}
 
     <div class="spread">
-      <div class="spread-head"><span>참가자별 거리</span><span>${formatKm(stats.total)} 합계</span></div>
+      <div class="spread-head"><span>참가자별 중심점까지 거리</span><span>${formatKm(stats.total)} 합계</span></div>
       ${spreadRows}
     </div>
 
@@ -1610,6 +1646,17 @@ function updateOverlaysOnly() {
   updateDistancesInline(result);
 }
 
+// 핀을 끄는 동안 오버레이를 매 프레임 지우고 다시 그리지 않는다 — 화면 주사율에 맞춰 한 번만.
+let dragFrame = null;
+function scheduleDragUpdate() {
+  if (dragFrame) return;
+  dragFrame = requestAnimationFrame(() => {
+    dragFrame = null;
+    if (!pinDrag) return;
+    updateOverlaysOnly();
+  });
+}
+
 let lightTimer = null;
 function scheduleLightResult() {
   clearTimeout(lightTimer);
@@ -1687,10 +1734,10 @@ function drawOverlays(result) {
   const station = result.rec?.primary;
   if (station) {
     const car = isCarMode();
-    const tap = registerTap(() => openInfo(
+    const tap = registerTap('overlay', () => openInfo(
       station.lat,
       station.lng,
-      `<strong>${esc(station.name)}</strong><br/>중심에서 ${formatKm(station.km)} · ${car ? `차로 ${driveMinutes(station.km)}` : (walkingMinutes(station.km) > 90 ? 'KTX·버스로 접근' : `도보 ${walkingMinutes(station.km)}분`)}`,
+      `<strong>${esc(station.name)}</strong><br/>중심점에서 ${formatKm(station.km)} · ${car ? `차로 ${driveMinutes(station.km)}` : (walkingMinutes(station.km) > 90 ? 'KTX·버스로 접근' : `도보 ${walkingMinutes(station.km)}분`)} <span class="est">(직선 예상)</span>`,
       -32,
     ));
     htmlMarker('overlay', {
@@ -1728,7 +1775,7 @@ function coursePin(place, number, kind) {
       <span>${esc(place.category || '')} · 도보 ${place.fromSpotMinutes ?? place.walkMinutes}분</span>
       <span class="popup-links">${reviewLinks(place)}</span>
     </div>`;
-  const tap = registerTap(() => openInfo(place.lat, place.lng, popup, -34));
+  const tap = registerTap('overlay', () => openInfo(place.lat, place.lng, popup, -34));
   return htmlMarker('overlay', {
     lat: place.lat,
     lng: place.lng,
@@ -1831,7 +1878,7 @@ function updateChrome() {
 function syncUrl() {
   try {
     const url = state.points.length
-      ? buildShareUrl(location.href, state.points, state.mode, state.travelMode)
+      ? buildShareUrl(location.href, state.points, state.mode, state.travelMode, state.carAnchor)
       : `${location.origin}${location.pathname.replace(/index\.html?$/i, '')}`;
     history.replaceState(null, '', url);
   } catch {
@@ -1871,7 +1918,8 @@ async function copyLink() {
     toast('먼저 출발지를 추가해 주세요');
     return;
   }
-  const url = buildShareUrl(location.href, state.points, state.mode);
+  // 이동 수단·자차 만남 기준까지 함께 실어야 받은 사람이 같은 결과를 본다.
+  const url = buildShareUrl(location.href, state.points, state.mode, state.travelMode, state.carAnchor);
   const ok = await copyText(url);
   toast(ok ? '링크를 복사했어요 — 받은 사람은 같은 결과를 봅니다' : url, ok ? 2800 : 6000);
 }
@@ -2286,14 +2334,14 @@ function initHeaderEvents() {
 
   window.addEventListener('popstate', () => {
     const parsed = parseShareState(location.href);
-    if (parsed.present) loadPoints(parsed.points, parsed.mode, false, parsed.travelMode);
+    if (parsed.present) loadPoints(parsed.points, parsed.mode, false, parsed.travelMode, parsed.carAnchor);
   });
 }
 
 /* ------------------------------------------------------------------
    초기 상태 불러오기
    ------------------------------------------------------------------ */
-function loadPoints(points, mode, notify = true, travelMode = null) {
+function loadPoints(points, mode, notify = true, travelMode = null, carAnchor = null) {
   state.points = points.map((p, i) => {
     seq += 1;
     return {
@@ -2313,6 +2361,12 @@ function loadPoints(points, mode, notify = true, travelMode = null) {
     });
     renderPresets();
   }
+  // 자차 만남 기준도 공유 상태에서 되살린다 (없으면 거리에 맞춰 자동)
+  state.carAnchor = state.travelMode === 'car' && (carAnchor === 'center' || carAnchor === 'highway')
+    ? carAnchor
+    : 'auto';
+  liveRuntime.key = '';
+  liveRuntime.status = 'idle';
   state.points.forEach(point => requestAddress(point));
   render();
   fitAll(false);
@@ -2320,35 +2374,25 @@ function loadPoints(points, mode, notify = true, travelMode = null) {
 }
 
 /* ------------------------------------------------------------------
-   모바일 뷰포트 고정 — 페이지 확대/축소 차단
-   (지도 핀치 줌은 네이버 지도 엔진이 직접 처리하므로 그대로 둔다)
+   앱 딥링크 대체 경로 — 카카오맵·티맵 앱이 없으면 웹 지도로 넘긴다.
+   앱이 열리면 문서가 숨겨지므로, 1.3초 동안 그대로면 설치되지 않은 것으로 본다.
    ------------------------------------------------------------------ */
-function initViewportLock() {
-  // iOS 사파리 전용 제스처 이벤트 — 페이지 자체의 핀치 확대를 막는다.
-  const blockGesture = event => {
-    if (event.cancelable) event.preventDefault();
-  };
-  ['gesturestart', 'gesturechange', 'gestureend'].forEach(name => {
-    document.addEventListener(name, blockGesture, { passive: false });
+function initAppLinkFallback() {
+  document.addEventListener('click', event => {
+    const link = event.target.closest?.('a[data-app-fallback]');
+    if (!link) return;
+    const fallback = link.getAttribute('data-app-fallback');
+    if (!fallback) return;
+    let left = document.hidden;
+    const onHide = () => { left = true; };
+    document.addEventListener('visibilitychange', onHide);
+    window.setTimeout(() => {
+      document.removeEventListener('visibilitychange', onHide);
+      if (left || document.hidden) return;
+      // 앱이 설치되지 않았거나 스킴이 막힌 환경 — 같은 길찾기를 웹으로 연다
+      window.location.href = fallback;
+    }, 1300);
   });
-
-  const insideMap = target => Boolean(el.map && target && el.map.contains(target));
-
-  // 더블탭 확대 방지 — 지도(네이버 지도 더블탭 줌)와 입력·버튼은 건드리지 않는다.
-  let lastTouchEnd = 0;
-  document.addEventListener('touchend', event => {
-    const now = Date.now();
-    const doubleTap = now - lastTouchEnd <= 320;
-    lastTouchEnd = now;
-    if (!doubleTap || !event.cancelable || insideMap(event.target)) return;
-    if (event.target.closest('input, textarea, select, button, a, [contenteditable="true"]')) return;
-    event.preventDefault();
-  }, { passive: false });
-
-  // 두 손가락 확대 (사파리 밖 브라우저) — 지도 영역은 지도 엔진이 처리한다.
-  document.addEventListener('touchmove', event => {
-    if (event.touches.length > 1 && !insideMap(event.target) && event.cancelable) event.preventDefault();
-  }, { passive: false });
 }
 
 /* ------------------------------------------------------------------
@@ -2363,12 +2407,12 @@ function boot() {
   initHeaderEvents();
   initPortalMenu();
   initSheet();
-  initViewportLock();
+  initAppLinkFallback();
   setSheet(el.panel.dataset.sheet || 'mini');
 
   const parsed = parseShareState(location.href);
   if (parsed.present && parsed.points.length) {
-    loadPoints(parsed.points, parsed.mode, true, parsed.travelMode);
+    loadPoints(parsed.points, parsed.mode, true, parsed.travelMode, parsed.carAnchor);
     if (parsed.skipped) toast(`좌표 ${parsed.skipped}개는 형식이 맞지 않아 건너뛰었어요`, 3200);
   } else {
     render();
