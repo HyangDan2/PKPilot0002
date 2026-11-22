@@ -308,17 +308,39 @@ function closeInfo() {
   if (infoWindow) infoWindow.close();
 }
 
+// 말풍선 표면색은 CSS 변수에서 읽는다 — 네이버 InfoWindow 는 인라인 색을 써서
+// CSS 만으로는 테마를 따라가지 못한다(라이트 모드에서도 시꺼먼 말풍선이 남았다).
+function themeSurface() {
+  const fallback = { bg: '#FFFFFF', border: '#D8D0EC' };
+  if (typeof getComputedStyle !== 'function') return fallback;
+  const css = getComputedStyle(document.documentElement);
+  const pick = (name, value) => (css.getPropertyValue(name) || '').trim() || value;
+  return {
+    bg: pick('--surface', fallback.bg),
+    border: pick('--border-strong', fallback.border),
+  };
+}
+
+function syncInfoTheme() {
+  if (!infoWindow) return;
+  const surface = themeSurface();
+  infoWindow.setOptions({ backgroundColor: surface.bg, borderColor: surface.border });
+}
+
 // 말풍선은 하나만 재사용한다 — Leaflet 팝업처럼 한 번에 하나만 열린다.
 function openInfo(lat, lng, html, offsetY = 0) {
   if (!mapReady()) return;
+  const surface = themeSurface();
   if (!infoWindow) {
     infoWindow = new naver.maps.InfoWindow({
-      backgroundColor: '#15170f',
-      borderColor: '#3c4136',
+      backgroundColor: surface.bg,
+      borderColor: surface.border,
       borderWidth: 1,
       anchorSize: new naver.maps.Size(12, 8),
       maxWidth: 280,
     });
+  } else {
+    infoWindow.setOptions({ backgroundColor: surface.bg, borderColor: surface.border });
   }
   infoWindow.setOptions({ pixelOffset: new naver.maps.Point(0, offsetY) });
   infoWindow.setContent(`<div class="map-popup">${html}</div>`);
@@ -1410,7 +1432,7 @@ function renderResult(result) {
     const width = Number.isFinite(d) ? Math.max(6, Math.min(100, (d / max) * 100)) : 0;
     return `
       <div class="spread-row">
-        <span class="s-idx" style="color:${PALETTE[i % PALETTE.length]}">${i + 1}</span>
+        <span class="s-idx" style="--c:${PALETTE[i % PALETTE.length]}">${i + 1}</span>
         <span class="s-bar"><i style="--w:${width.toFixed(1)}%"></i></span>
         <span class="s-val">${formatKm(d)}</span>
       </div>`;
@@ -2409,6 +2431,9 @@ function boot() {
   initSheet();
   initAppLinkFallback();
   setSheet(el.panel.dataset.sheet || 'mini');
+
+  // 헤더 토글이 테마를 바꾸면 지도 위 말풍선도 같은 표면색으로 다시 칠한다
+  window.addEventListener('hd2-theme-change', syncInfoTheme);
 
   const parsed = parseShareState(location.href);
   if (parsed.present && parsed.points.length) {

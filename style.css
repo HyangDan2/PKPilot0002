@@ -40,6 +40,18 @@
   --shadow-md: 0 12px 32px rgba(29, 25, 43, 0.1);
   --shadow-sm: 0 4px 14px rgba(29, 25, 43, 0.07);
 
+  /* 테마를 따라가는 반투명 틴트 — 라이트에서는 먹색, 다크에서는 흰색으로 뒤집힌다.
+     반투명 흰색을 직접 쓰면 라이트 모드에서 거의 보이지 않는다. */
+  --tint-1: rgba(29, 25, 43, 0.025);
+  --tint-2: rgba(29, 25, 43, 0.05);
+  --tint-3: rgba(29, 25, 43, 0.075);
+  --tint-4: rgba(29, 25, 43, 0.13);
+
+  /* 지도 위에 뜨는 UI(범례·도구 버튼·핀 이름표·말풍선) — 타일은 테마와 무관한
+     밝은 회색이므로 두 테마 모두에서 이 표면이 또렷이 떠야 한다. */
+  --map-ui: rgba(255, 255, 255, 0.92);
+  --map-ui-strong: rgba(255, 255, 255, 0.97);
+
   --header-h: 60px;
   --panel-w: 412px;
   /* 모바일 바텀 시트 3단 — 미니 / 하프 / 풀 */
@@ -191,7 +203,7 @@ a {
   height: var(--header-h);
   padding: 0 18px;
   border-bottom: 1px solid var(--border);
-  background: rgba(250, 250, 253, 0.88);
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
   backdrop-filter: blur(14px) saturate(1.2);
   -webkit-backdrop-filter: blur(14px) saturate(1.2);
 }
@@ -296,7 +308,7 @@ a {
 
 .primary-btn {
   border: 1px solid var(--accent-line);
-  background: linear-gradient(180deg, #8B6CE8, #7655D9);
+  background: linear-gradient(180deg, var(--accent), var(--accent-2));
   color: #FFFFFF;
   box-shadow: 0 6px 18px rgba(139, 108, 232, 0.24);
 }
@@ -316,6 +328,86 @@ a {
   cursor: default;
   box-shadow: none;
   filter: none;
+}
+
+/* ---------------- 라이트/다크 슬라이드 토글 (헤더) ---------------- */
+/* 헤더 액션 줄에 놓는 슬라이드 스위치. 트랙 위에서 손잡이가 좌(라이트)→우(다크)로
+   미끄러지고, 손잡이 위의 해/달 아이콘이 지금 테마를 가리킨다. */
+.theme-switch {
+  --ts-knob-ink: #FFFFFF;
+  --ts-travel: 26px;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: none;
+  width: 56px;
+  height: 30px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted-2);
+  transition: background-color 0.2s var(--ease), border-color 0.2s var(--ease);
+}
+
+/* 터치 목표를 44px 높이로 넓힌다 (보이는 트랙은 30px) */
+.theme-switch::before {
+  content: '';
+  position: absolute;
+  inset: -7px -3px;
+}
+
+.theme-switch:hover {
+  border-color: var(--accent-line);
+}
+
+.theme-switch:focus-visible {
+  outline: 2px solid var(--accent-2);
+  outline-offset: 3px;
+}
+
+.theme-switch .ts-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 3px 10px rgba(139, 108, 232, 0.36);
+  transition: transform 0.26s var(--ease-out);
+}
+
+html[data-theme='dark'] .theme-switch .ts-knob {
+  transform: translateX(var(--ts-travel));
+}
+
+.theme-switch .ts-ic {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  transition: color 0.2s var(--ease);
+}
+
+.theme-switch .ts-ic .ic {
+  width: 13px;
+  height: 13px;
+  stroke-width: 2.1;
+}
+
+/* 지금 테마의 아이콘만 손잡이 위에서 진하게 읽힌다 */
+html[data-theme='light'] .theme-switch .ts-sun,
+html[data-theme='dark'] .theme-switch .ts-moon {
+  color: var(--ts-knob-ink);
+}
+
+html[data-theme='dark'] .theme-switch {
+  --ts-knob-ink: #0B1020;
+  background: var(--surface);
 }
 
 /* ---------------- HD2Lab 포털 메뉴 (더보기 …) ---------------- */
@@ -368,7 +460,7 @@ a {
   padding: 8px;
   border-radius: var(--radius);
   border: 1px solid var(--border);
-  background: #FFFFFF;
+  background: var(--surface);
   -webkit-backdrop-filter: blur(18px) saturate(1.25);
   backdrop-filter: blur(18px) saturate(1.25);
   box-shadow: var(--shadow-lg), 0 0 0 1px rgba(139, 108, 232, 0.06);
@@ -401,7 +493,7 @@ a {
   height: 8px;
   border-left: 1px solid var(--border);
   border-top: 1px solid var(--border);
-  background: #FFFFFF;
+  background: var(--surface);
   transform: rotate(45deg);
 }
 
@@ -540,8 +632,8 @@ a {
   min-height: 0;
   border-right: 1px solid var(--border);
   background:
-    radial-gradient(600px 300px at 100% 0%, rgba(139, 108, 232, 0.05), transparent 70%),
-    linear-gradient(180deg, #FFFFFF 0%, #FDFCFF 46%, #FAFAFD 100%);
+    radial-gradient(600px 300px at 100% 0%, color-mix(in srgb, var(--accent) 6%, transparent), transparent 70%),
+    linear-gradient(180deg, var(--surface) 0%, var(--surface) 46%, var(--bg) 100%);
 }
 
 .sheet-grab {
@@ -556,7 +648,7 @@ a {
   flex-direction: column;
   gap: 18px;
   scrollbar-width: thin;
-  scrollbar-color: #CFC7E4 transparent;
+  scrollbar-color: var(--border-strong) transparent;
 }
 
 .panel-scroll::-webkit-scrollbar {
@@ -564,7 +656,7 @@ a {
 }
 
 .panel-scroll::-webkit-scrollbar-thumb {
-  background: #D8D0EC;
+  background: var(--border-strong);
   border-radius: 99px;
   border: 2px solid transparent;
   background-clip: content-box;
@@ -598,7 +690,7 @@ a {
   line-height: 1.24;
   font-weight: 500;
   letter-spacing: -0.035em;
-  color: #1D192B;
+  color: var(--text);
 }
 
 .panel-head h1 strong {
@@ -674,7 +766,7 @@ a {
 }
 
 .search-btn:hover {
-  background: #EDE8FA;
+  background: var(--surface-3);
 }
 
 .search-btn[disabled] {
@@ -693,7 +785,7 @@ a {
   padding: 5px;
   border: 1px solid var(--border);
   border-radius: 13px;
-  background: #F7F5FE;
+  background: var(--surface-2);
   box-shadow: var(--shadow-lg);
 }
 
@@ -754,7 +846,7 @@ a {
 
 .search-results .res-landmark .res-ic,
 .search-results .res-remote .res-ic {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--tint-2);
   color: var(--muted);
 }
 
@@ -763,8 +855,8 @@ a {
 .search-results .res-rest .res-ic,
 .search-results .res-parking .res-ic,
 .search-results .res-ktx .res-ic {
-  background: #E8F0FE;
-  color: #2F6FEB;
+  background: color-mix(in srgb, #2F6FEB 10%, var(--surface-2));
+  color: color-mix(in srgb, #2F6FEB 74%, var(--text));
 }
 
 .search-results .res-body {
@@ -858,7 +950,7 @@ a {
   padding: 4px;
   border: 1px solid var(--border);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--tint-2);
 }
 
 .mode-toggle button {
@@ -902,7 +994,7 @@ a {
   padding: 0 11px;
   border: 1px solid var(--border);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--tint-1);
   color: var(--muted);
   font-size: 12px;
   font-weight: 600;
@@ -1011,13 +1103,13 @@ a,
   padding: 9px 8px 9px 10px;
   border: 1px solid var(--border-soft);
   border-radius: 13px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.026), rgba(255, 255, 255, 0.008));
+  background: linear-gradient(180deg, var(--tint-1), transparent);
   transition: border-color 0.18s var(--ease), background 0.18s var(--ease);
 }
 
 .participant:hover {
   border-color: var(--border);
-  background: rgba(255, 255, 255, 0.045);
+  background: var(--tint-2);
 }
 
 .participant.is-active {
@@ -1032,9 +1124,9 @@ a,
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  background: color-mix(in srgb, var(--c) 20%, #FFFFFF);
-  border: 2px solid var(--c);
-  color: #fff;
+  background: var(--c);
+  border: 2px solid color-mix(in srgb, var(--c) 62%, var(--surface));
+  color: #10131A;
   font-size: 11.5px;
   font-weight: 800;
   font-family: var(--mono);
@@ -1200,8 +1292,8 @@ a,
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background:
-    radial-gradient(320px 140px at 100% 0%, rgba(139, 108, 232, 0.1), transparent 70%),
-    linear-gradient(180deg, #FFFFFF, #F7F5FE);
+    radial-gradient(320px 140px at 100% 0%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 70%),
+    linear-gradient(180deg, var(--surface), var(--surface-2));
   box-shadow: var(--shadow-sm);
 }
 
@@ -1219,7 +1311,7 @@ a,
   width: 104px;
   height: 104px;
   border-radius: 50%;
-  background: conic-gradient(from 180deg, var(--accent) calc(var(--p) * 1%), rgba(255, 255, 255, 0.075) 0);
+  background: conic-gradient(from 180deg, var(--accent) calc(var(--p) * 1%), var(--tint-3) 0);
   box-shadow: 0 0 26px rgba(139, 108, 232, 0.16), inset 0 0 0 1px rgba(255, 255, 255, 0.05);
   transition: background 0.5s var(--ease);
 }
@@ -1229,8 +1321,8 @@ a,
   position: absolute;
   inset: 9px;
   border-radius: 50%;
-  background: linear-gradient(180deg, #FFFFFF, #F4F1FC);
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  background: linear-gradient(180deg, var(--surface), var(--bg-2));
+  border: 1px solid var(--border-soft);
 }
 
 .ring-inner {
@@ -1339,7 +1431,7 @@ a,
   padding: 4px;
   border: 1px solid var(--border-soft);
   border-radius: 11px;
-  background: rgba(29, 25, 43, 0.06);
+  background: var(--tint-2);
 }
 
 .mode-switch button {
@@ -1380,7 +1472,7 @@ a,
   padding: 4px;
   border: 1px solid var(--border-soft);
   border-radius: 12px;
-  background: rgba(29, 25, 43, 0.07);
+  background: var(--tint-3);
 }
 
 .car-anchor button {
@@ -1426,12 +1518,12 @@ a,
 
 .car-anchor button[aria-pressed='true'] {
   background: linear-gradient(180deg, rgba(139, 108, 232, 0.22), rgba(139, 108, 232, 0.14));
-  color: #6B4CD6;
+  color: var(--accent-2);
   box-shadow: inset 0 0 0 1px var(--accent-line), var(--shadow-sm);
 }
 
 .car-anchor button[aria-pressed='true'] b {
-  color: #6B4CD6;
+  color: var(--accent-2);
 }
 
 .car-anchor button[aria-pressed='true'] small {
@@ -1444,8 +1536,8 @@ a,
   overflow: hidden;
   border-color: var(--accent-line);
   background:
-    radial-gradient(300px 160px at 100% 0%, rgba(139, 108, 232, 0.16), transparent 72%),
-    linear-gradient(180deg, #FFFFFF, #F7F5FE);
+    radial-gradient(300px 160px at 100% 0%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 72%),
+    linear-gradient(180deg, var(--surface), var(--surface-2));
 }
 
 .station-top {
@@ -1524,7 +1616,7 @@ a,
 
 .both-badge,
 .parking-badge {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--tint-2);
   box-shadow: inset 0 0 0 1px var(--border);
   color: var(--text);
 }
@@ -1532,12 +1624,12 @@ a,
 .station-card.is-car {
   border-color: rgba(47, 111, 235, 0.35);
   background:
-    radial-gradient(300px 160px at 100% 0%, rgba(94, 200, 255, 0.14), transparent 72%),
-    linear-gradient(180deg, #F3F6FE, #E9EFFC);
+    radial-gradient(300px 160px at 100% 0%, color-mix(in srgb, #2F6FEB 14%, transparent), transparent 72%),
+    linear-gradient(180deg, color-mix(in srgb, #2F6FEB 7%, var(--surface)), color-mix(in srgb, #2F6FEB 13%, var(--surface)));
 }
 
 .station-card.is-car .station-kicker {
-  color: #2F6FEB;
+  color: color-mix(in srgb, #2F6FEB 72%, var(--text));
 }
 
 /* 참가자별 길찾기 링크 */
@@ -1607,7 +1699,7 @@ a,
   padding: 0 10px;
   border: 1px solid var(--border);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--tint-2);
   color: var(--text);
   font-size: 11.5px;
   font-weight: 700;
@@ -1653,7 +1745,7 @@ a,
   padding: 0 10px;
   border: 1px solid var(--border);
   border-radius: 999px;
-  background: rgba(29, 25, 43, 0.05);
+  background: var(--tint-2);
   color: var(--muted);
   font-size: 11.5px;
   font-weight: 600;
@@ -1704,7 +1796,7 @@ a,
   padding: 12px 14px;
   border: 1px solid var(--border-soft);
   border-radius: 13px;
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--tint-1);
 }
 
 .spread-head {
@@ -1730,7 +1822,8 @@ a,
   font-size: 10.5px;
   font-weight: 800;
   font-family: var(--mono);
-  color: var(--muted-2);
+  /* 참가자 색은 파스텔이라 그대로 쓰면 흰 카드에서 안 읽힌다 — 먹색과 섞는다 */
+  color: color-mix(in srgb, var(--c, var(--muted-2)) 62%, var(--text));
   text-align: center;
 }
 
@@ -1738,7 +1831,7 @@ a,
   position: relative;
   height: 6px;
   border-radius: 99px;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--tint-3);
   overflow: hidden;
 }
 
@@ -1801,8 +1894,8 @@ a,
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background:
-    radial-gradient(280px 140px at 0% 0%, rgba(139, 108, 232, 0.1), transparent 72%),
-    linear-gradient(180deg, #FFFFFF, #F6F4FC);
+    radial-gradient(280px 140px at 0% 0%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 72%),
+    linear-gradient(180deg, var(--surface), var(--surface-2));
   box-shadow: var(--shadow-sm);
 }
 
@@ -1827,7 +1920,7 @@ a,
 .nearby-head h3 .ic {
   width: 15px;
   height: 15px;
-  color: #8B6CE8;
+  color: var(--accent);
 }
 
 .nearby-anchor {
@@ -1844,7 +1937,7 @@ a,
   gap: 4px;
   padding: 3px;
   border-radius: 11px;
-  background: rgba(29, 25, 43, 0.06);
+  background: var(--tint-2);
   border: 1px solid var(--border-soft);
 }
 
@@ -1887,7 +1980,7 @@ a,
   padding: 3px;
   border-radius: 9px;
   border: 1px solid var(--border-soft);
-  background: rgba(29, 25, 43, 0.05);
+  background: var(--tint-2);
 }
 
 .place-sort-label {
@@ -1915,14 +2008,14 @@ a,
 }
 
 .place-sort button[aria-pressed='true'] {
-  color: #FFFFFF;
+  color: #2A1206;
   background: linear-gradient(180deg, #ffc59f, #ffa070);
 }
 
 .nearby-note {
   font-size: 10px;
   line-height: 1.5;
-  color: #8B8598;
+  color: var(--muted-2);
 }
 
 /* 추천 코스 카드 */
@@ -1934,7 +2027,7 @@ a,
   padding: 11px 12px;
   border: 1px solid var(--border);
   border-radius: 13px;
-  background: linear-gradient(180deg, #FFFFFF, #F7F5FE);
+  background: linear-gradient(180deg, var(--surface), var(--surface-2));
   text-align: left;
   transition: all 0.18s var(--ease);
 }
@@ -1946,8 +2039,8 @@ a,
 .course-card.is-active {
   border-color: var(--accent-line);
   background:
-    radial-gradient(220px 120px at 100% 0%, rgba(139, 108, 232, 0.16), transparent 70%),
-    linear-gradient(180deg, #FEF8E9, #FAF0D9);
+    radial-gradient(220px 120px at 100% 0%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 70%),
+    linear-gradient(180deg, color-mix(in srgb, var(--warn) 8%, var(--surface)), color-mix(in srgb, var(--warn) 15%, var(--surface)));
   box-shadow: inset 0 0 0 1px rgba(139, 108, 232, 0.18);
 }
 
@@ -1996,15 +2089,15 @@ a,
   width: 34px;
   height: 20px;
   border-radius: 6px;
-  background: #F1ECFE;
-  color: #6B4CD6;
+  background: var(--accent-soft);
+  color: var(--accent-2);
   font-size: 10px;
   font-weight: 800;
 }
 
 .leg-num.is-cafe {
-  background: #FDF4DC;
-  color: #A16207;
+  background: color-mix(in srgb, var(--warn) 14%, var(--surface));
+  color: color-mix(in srgb, var(--warn) 78%, var(--text));
 }
 
 .leg-body {
@@ -2038,7 +2131,7 @@ a,
   padding-left: 42px;
   font-size: 11px;
   font-weight: 700;
-  color: #8B6CE8;
+  color: var(--accent);
   font-variant-numeric: tabular-nums;
 }
 
@@ -2091,7 +2184,7 @@ a,
   padding: 10px 11px;
   border: 1px solid var(--border-soft);
   border-radius: 11px;
-  background: rgba(255, 255, 255, 0.022);
+  background: var(--tint-1);
   transition: border-color 0.16s var(--ease);
 }
 
@@ -2123,16 +2216,16 @@ a,
   height: 18px;
   padding: 0 7px;
   border-radius: 999px;
-  background: #F1ECFE;
-  color: #6B4CD6;
+  background: var(--accent-soft);
+  color: var(--accent-2);
   font-size: 9.5px;
   font-weight: 800;
   white-space: nowrap;
 }
 
 .place-cat[data-kind='cafe'] {
-  background: #FDF4DC;
-  color: #A16207;
+  background: color-mix(in srgb, var(--warn) 14%, var(--surface));
+  color: color-mix(in srgb, var(--warn) 78%, var(--text));
 }
 
 .place-meta {
@@ -2149,7 +2242,7 @@ a,
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  color: #6B4CD6;
+  color: var(--accent-2);
   font-weight: 700;
 }
 
@@ -2164,7 +2257,7 @@ a,
   height: 17px;
   padding: 0 6px;
   border-radius: 5px;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--tint-3);
   color: var(--muted);
   font-size: 9.5px;
   font-weight: 600;
@@ -2196,33 +2289,33 @@ a,
 }
 
 .place-link.is-naver:hover {
-  border-color: rgba(3, 199, 90, 0.45);
-  color: #0A8F4C;
+  border-color: color-mix(in srgb, #03C75A 45%, transparent);
+  color: color-mix(in srgb, var(--good) 78%, var(--text));
 }
 
 .place-link.is-kakao:hover {
   border-color: rgba(254, 229, 0, 0.55);
-  color: #8A6D00;
+  color: color-mix(in srgb, var(--warn) 82%, var(--text));
 }
 
 /* 네이버 평점 · 카카오 리뷰 뱃지 */
 .place-link.place-rating {
   gap: 3px;
-  border-color: rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.03);
+  border-color: var(--tint-4);
+  background: var(--tint-2);
 }
 
 .place-link.place-rating.is-naver {
-  color: #0A8F4C;
+  color: color-mix(in srgb, var(--good) 78%, var(--text));
 }
 
 .place-link.place-rating.is-kakao {
-  color: #8A6D00;
+  color: color-mix(in srgb, var(--warn) 82%, var(--text));
 }
 
 .line-badge.center-badge {
-  background: #EDE6FD;
-  color: #6B4CD6;
+  background: var(--accent-soft);
+  color: var(--accent-2);
 }
 
 .place-actions .mini-btn {
@@ -2237,7 +2330,7 @@ a,
   padding: 12px;
   border: 1px dashed var(--border);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--tint-1);
 }
 
 .nearby-empty p {
@@ -2313,8 +2406,8 @@ a,
   height: 18px;
   padding: 0 7px;
   border-radius: 999px;
-  background: #E7F6EE;
-  color: #0A8F4C;
+  background: color-mix(in srgb, var(--good) 14%, var(--surface));
+  color: color-mix(in srgb, var(--good) 78%, var(--text));
   font-size: 9.5px;
   font-weight: 800;
   letter-spacing: 0.01em;
@@ -2329,8 +2422,8 @@ a,
 }
 
 .nearby-live[data-live='loading'] {
-  background: #F1ECFE;
-  color: #6B4CD6;
+  background: var(--accent-soft);
+  color: var(--accent-2);
 }
 
 .nearby-live[data-live='loading'] i {
@@ -2338,13 +2431,13 @@ a,
 }
 
 .nearby-live[data-live='empty'] {
-  background: rgba(255, 255, 255, 0.07);
+  background: var(--tint-3);
   color: var(--muted);
 }
 
 .nearby-live[data-live='error'] {
-  background: #FDECEC;
-  color: #D14343;
+  background: color-mix(in srgb, var(--bad) 12%, var(--surface));
+  color: color-mix(in srgb, var(--bad) 78%, var(--text));
 }
 
 @keyframes livePulse {
@@ -2360,7 +2453,7 @@ a,
   padding: 11px 12px;
   border: 1px solid var(--border);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--tint-1);
 }
 
 .nearby-loading-head {
@@ -2384,8 +2477,8 @@ a,
   width: 13px;
   height: 13px;
   border-radius: 50%;
-  border: 2px solid rgba(139, 108, 232, 0.28);
-  border-top-color: #8B6CE8;
+  border: 2px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  border-top-color: var(--accent);
   animation: spin 0.8s linear infinite;
 }
 
@@ -2408,7 +2501,7 @@ a,
   gap: 8px;
   padding: 9px 10px;
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--tint-2);
 }
 
 .skel-dot {
@@ -2416,7 +2509,7 @@ a,
   width: 18px;
   height: 18px;
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.07);
+  background: var(--tint-3);
 }
 
 .skel-lines {
@@ -2430,7 +2523,7 @@ a,
   display: block;
   height: 8px;
   border-radius: 4px;
-  background: linear-gradient(90deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.13), rgba(255, 255, 255, 0.06));
+  background: linear-gradient(90deg, var(--tint-1), var(--tint-3), var(--tint-1));
   background-size: 200% 100%;
   animation: skel 1.3s ease-in-out infinite;
 }
@@ -2472,7 +2565,7 @@ a,
 
 .foot-credit {
   font-size: 10px;
-  color: #8B8598;
+  color: var(--muted-2);
   letter-spacing: 0.01em;
 }
 
@@ -2482,7 +2575,7 @@ a,
 .map-stage {
   position: relative;
   min-width: 0;
-  background: #EFEBF7;
+  background: var(--bg-2);
 }
 
 #map {
@@ -2493,7 +2586,7 @@ a,
   width: 100%;
   height: 100%;
   z-index: 1;
-  background: #EFEBF7;
+  background: var(--bg-2);
   font-family: var(--font);
 }
 
@@ -2556,9 +2649,9 @@ body.is-dragging-pin .pin-person {
   width: 30px;
   height: 30px;
   border-radius: 50%;
-  background: color-mix(in srgb, var(--c) 24%, #FFFFFF);
-  border: 2.5px solid var(--c);
-  color: #fff;
+  background: var(--c);
+  border: 2.5px solid color-mix(in srgb, var(--c) 66%, var(--surface));
+  color: #10131A;
   font-size: 11.5px;
   font-weight: 800;
   font-family: var(--mono);
@@ -2642,13 +2735,13 @@ body.is-dragging-pin .pin-person {
   height: 26px;
   padding: 0 9px 0 7px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.96);
+  background: var(--map-ui-strong);
   border: 1px solid var(--accent-line);
   color: var(--text);
   font-size: 11.5px;
   font-weight: 700;
   white-space: nowrap;
-  box-shadow: 0 6px 18px rgba(29, 25, 43, 0.12);
+  box-shadow: var(--shadow-sm);
 }
 
 .pin-station .ic {
@@ -2663,14 +2756,14 @@ body.is-dragging-pin .pin-person {
   gap: 4px;
   padding: 2px 6px;
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.96);
-  border: 1px solid #E8E4F2;
-  color: #544E68;
+  background: var(--map-ui-strong);
+  border: 1px solid var(--border);
+  color: var(--text);
   font-size: 10.5px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-  box-shadow: 0 3px 10px rgba(29, 25, 43, 0.12);
+  box-shadow: var(--shadow-sm);
 }
 
 /* 약속 코스 마커 — ① 식당(오랜지) ② 카페(앰버) */
@@ -2717,13 +2810,13 @@ body.is-dragging-pin .pin-person {
   align-items: center;
   padding: 2px 7px;
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.97);
-  border: 1px solid rgba(139, 108, 232, 0.5);
-  color: #C4B5FD;
+  background: var(--map-ui-strong);
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent);
+  color: var(--accent-2);
   font-size: 10.5px;
   font-weight: 800;
   white-space: nowrap;
-  box-shadow: 0 3px 12px rgba(29, 25, 43, 0.12);
+  box-shadow: var(--shadow-sm);
 }
 
 .pin-focus {
@@ -2731,8 +2824,8 @@ body.is-dragging-pin .pin-person {
   width: 34px;
   height: 34px;
   border-radius: 50%;
-  border: 2.5px dashed #8B6CE8;
-  background: #F1ECFE;
+  border: 2.5px dashed var(--accent);
+  background: var(--accent-soft);
   animation: focusSpin 9s linear infinite;
 }
 
@@ -2771,7 +2864,7 @@ body.is-dragging-pin .pin-person {
 /* 네이버 지도 말풍선(InfoWindow) 안쪽 — 바탕색은 app.js 의 InfoWindow 옵션과 맞춘다 */
 .map-popup {
   padding: 1px 1px 0;
-  color: #1D192B;
+  color: var(--text);
   font-family: var(--font);
   font-size: 12px;
   line-height: 1.55;
@@ -2780,16 +2873,16 @@ body.is-dragging-pin .pin-person {
 .map-popup strong {
   display: block;
   margin-bottom: 1px;
-  color: #fff;
+  color: var(--text);
   font-size: 13px;
 }
 
 .map-popup .popup-place span {
-  color: #68627A;
+  color: var(--muted);
 }
 
 .map-popup a {
-  color: #C4B5FD;
+  color: var(--accent-2);
 }
 
 /* 네이버 지도 마커 안쪽 이름표 (Leaflet 툴팁 대체) */
@@ -2800,9 +2893,9 @@ body.is-dragging-pin .pin-person {
   transform: translateX(-50%);
   padding: 2px 7px;
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.95);
-  border: 1px solid #E8E4F2;
-  color: #1D192B;
+  background: var(--map-ui-strong);
+  border: 1px solid var(--border);
+  color: var(--text);
   font-family: var(--font);
   font-size: 10.5px;
   font-weight: 700;
@@ -2824,7 +2917,7 @@ body.is-dragging-pin .pin-person {
   padding: 0 13px 0 10px;
   border-radius: 999px;
   border: 1px solid var(--border);
-  background: rgba(250, 250, 253, 0.88);
+  background: var(--map-ui);
   backdrop-filter: blur(10px);
   color: var(--muted);
   font-size: 12px;
@@ -2860,7 +2953,7 @@ body.is-dragging-pin .pin-person {
   height: 34px;
   border-radius: 10px;
   border: 1px solid var(--border);
-  background: rgba(250, 250, 253, 0.88);
+  background: var(--map-ui);
   backdrop-filter: blur(10px);
   color: var(--muted);
   box-shadow: var(--shadow-md);
@@ -2895,7 +2988,7 @@ body.is-dragging-pin .pin-person {
   padding: 7px 12px;
   border-radius: 999px;
   border: 1px solid var(--border);
-  background: rgba(16, 17, 16, 0.82);
+  background: var(--map-ui-strong);
   backdrop-filter: blur(10px);
   font-size: 10.5px;
   color: var(--muted);
@@ -2948,7 +3041,7 @@ body.is-dragging-pin .pin-person {
   padding: 10px 16px;
   border-radius: 999px;
   border: 1px solid var(--border-strong);
-  background: rgba(255, 255, 255, 0.97);
+  background: var(--surface);
   color: var(--text);
   font-size: 12.5px;
   font-weight: 600;
@@ -3112,7 +3205,7 @@ body.is-dragging-pin .pin-person {
     width: 38px;
     height: 4px;
     border-radius: 99px;
-    background: #D8D0EC;
+    background: var(--border-strong);
     flex: none;
   }
 
@@ -3136,7 +3229,7 @@ body.is-dragging-pin .pin-person {
     gap: 3px;
     padding: 2px;
     border-radius: 9px;
-    background: rgba(29, 25, 43, 0.12);
+    background: var(--tint-4);
     border: 1px solid var(--border-soft);
     backdrop-filter: blur(4px);
   }
@@ -3362,6 +3455,20 @@ body.is-dragging-pin .pin-person {
   }
 }
 
+@media (max-width: 344px) {
+  /* 320~344px: the app badge is the first thing that can go, then the switch
+     tightens so the header never wraps or overflows */
+  .brand em {
+    display: none;
+  }
+
+  .theme-switch {
+    --ts-travel: 20px;
+    width: 48px;
+    padding: 0 5px;
+  }
+}
+
 @media (max-width: 380px) {
   .brand-name {
     font-size: 20px;
@@ -3428,9 +3535,11 @@ body.is-dragging-pin .pin-person {
 
 /* ------------------------------------------------------------------
    1b. Navy & Lavender — dark mode ([data-theme="dark"])
-   Shell, panel and bottom sheet go navy; the map tiles keep their own
-   light rendering (Naver's tiles are not themeable) and the pins on top
-   of them are re-inked so they still read.
+   Light mode is written against the tokens above, so dark mode only swaps
+   the tokens plus the handful of places that need a deeper surface (the
+   sheet, the ring well) or ink instead of paper on the pale accent.
+   The map tiles keep their own light rendering (Naver's tiles are not
+   themeable); everything the app draws on top of them follows the theme.
    ------------------------------------------------------------------ */
 [data-theme="dark"] {
   color-scheme: dark;
@@ -3460,6 +3569,14 @@ body.is-dragging-pin .pin-person {
   --shadow-lg: 0 26px 70px rgba(0, 0, 0, 0.58);
   --shadow-md: 0 12px 32px rgba(0, 0, 0, 0.46);
   --shadow-sm: 0 4px 14px rgba(0, 0, 0, 0.36);
+
+  --tint-1: rgba(255, 255, 255, 0.025);
+  --tint-2: rgba(255, 255, 255, 0.05);
+  --tint-3: rgba(255, 255, 255, 0.075);
+  --tint-4: rgba(255, 255, 255, 0.14);
+
+  --map-ui: rgba(11, 16, 32, 0.9);
+  --map-ui-strong: rgba(18, 25, 46, 0.96);
 }
 
 [data-theme="dark"] body {
@@ -3469,48 +3586,31 @@ body.is-dragging-pin .pin-person {
     var(--bg);
 }
 
-/* ---- header · panel · sheet ---- */
-[data-theme="dark"] .app-header { background: rgba(11, 16, 32, 0.88); }
-[data-theme="dark"] .panel-head h1 { color: var(--text); }
-[data-theme="dark"] .map-stage { background: var(--bg-2); }
-
+/* the sheet sits a step deeper than --surface, so it reads as glass on the frame */
 [data-theme="dark"] .panel {
   background:
     radial-gradient(600px 300px at 100% 0%, rgba(167, 139, 250, 0.07), transparent 70%),
-    linear-gradient(180deg, #12192E 0%, #101731 46%, #0D1428 100%);
+    linear-gradient(180deg, var(--surface) 0%, #101731 46%, #0D1428 100%);
 }
 
-[data-theme="dark"] .panel-scroll { scrollbar-color: #344472 transparent; }
-[data-theme="dark"] .panel-scroll::-webkit-scrollbar-thumb { background: #344472; }
+[data-theme="dark"] .ring::before {
+  background: linear-gradient(180deg, var(--surface), var(--bg));
+}
 
-[data-theme="dark"] .portal-menu-dropdown,
-[data-theme="dark"] .portal-menu-dropdown::before { background: var(--surface); }
+/* the pale accent needs a couple of neutral slots re-inked */
+[data-theme="dark"] .leg-num.is-cafe,
+[data-theme="dark"] .place-cat[data-kind='cafe'] {
+  background: color-mix(in srgb, var(--warn) 16%, var(--surface));
+  color: var(--warn);
+}
 
-/* ---- cards ---- */
-[data-theme="dark"] .card,
-[data-theme="dark"] .station-card,
-[data-theme="dark"] .course-card { background: linear-gradient(180deg, var(--surface), var(--surface-2)); }
-[data-theme="dark"] .nearby { background: linear-gradient(180deg, var(--surface), var(--surface-2)); }
-[data-theme="dark"] .ring::before { background: linear-gradient(180deg, var(--surface), var(--bg-deep, #0B1020)); }
-[data-theme="dark"] .search-results { background: var(--surface-2); }
-[data-theme="dark"] .search-btn:hover { background: var(--surface-3); }
+[data-theme="dark"] .pin-course {
+  border-color: var(--surface);
+}
 
-[data-theme="dark"] .leg-num,
-[data-theme="dark"] .place-cat,
-[data-theme="dark"] .pin-focus,
-[data-theme="dark"] .nearby-live[data-live="loading"] { background: var(--accent-soft); }
-
-[data-theme="dark"] .toast { background: rgba(18, 25, 46, 0.97); }
-[data-theme="dark"] .grab-bar { background: var(--border-strong); }
-
-/* ---- map furniture (sits on Naver's light tiles) ---- */
-[data-theme="dark"] .map-tool,
-[data-theme="dark"] .map-hint { background: rgba(11, 16, 32, 0.9); }
-[data-theme="dark"] .pin-station,
-[data-theme="dark"] .pin-label,
-[data-theme="dark"] .course-label,
-[data-theme="dark"] .pin-tip { background: rgba(18, 25, 46, 0.96); border-color: var(--border); color: var(--text); }
-[data-theme="dark"] .pin-course { border-color: var(--surface); }
+[data-theme="dark"] .theme-switch .ts-knob {
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.5);
+}
 
 /* the accent is a pale lavender in this palette, so ink sits on it, not paper */
 [data-theme="dark"] .primary-btn,
@@ -3519,36 +3619,5 @@ body.is-dragging-pin .pin-person {
 [data-theme="dark"] .mode-toggle button[aria-pressed="true"],
 [data-theme="dark"] .nearby-tabs button[aria-selected="true"],
 [data-theme="dark"] .place-sort button[aria-pressed="true"],
-[data-theme="dark"] .grab-stages button[aria-pressed="true"] { color: #0B1020; }
-
-
-/* ------------------------------------------------------------------
-   Floating Light/Dark toggle — bottom-right of the map, above the zoom
-   stack on desktop and above the bottom sheet + zoom stack on phones.
-   ------------------------------------------------------------------ */
-.hd2-theme-toggle {
-  --hd2-toggle-bg: var(--surface);
-  --hd2-toggle-fg: var(--text);
-  --hd2-toggle-border: var(--border);
-  --hd2-toggle-shadow: 0 10px 26px rgba(29, 25, 43, 0.16);
-  --hd2-toggle-hover: var(--accent);
-  --hd2-toggle-z: 520;
-  --hd2-toggle-right: 14px;
-  --hd2-toggle-bottom: 104px;
-}
-[data-theme="dark"] .hd2-theme-toggle {
-  --hd2-toggle-bg: rgba(18, 25, 46, 0.92);
-  --hd2-toggle-border: var(--border-strong);
-  --hd2-toggle-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
-}
-@media (max-width: 900px) {
-  .hd2-theme-toggle {
-    /* ride above the sheet snap the map tools already use, but never climb
-       past the header when the sheet is opened to full */
-    --hd2-toggle-bottom: min(calc(var(--sheet-h, var(--peek-h)) + 88px),
-                             calc(100dvh - var(--header-h) - 64px));
-  }
-  /* sheet opened to full: only a 20% map strip is left, so step aside */
-  .hd2-theme-toggle { transition: opacity 0.2s var(--ease); }
-  html:has(.panel[data-sheet="full"]) .hd2-theme-toggle { opacity: 0; pointer-events: none; }
-}
+[data-theme="dark"] .grab-stages button[aria-pressed="true"],
+[data-theme="dark"] .course-card.is-active .course-head b { color: #0B1020; }
