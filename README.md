@@ -226,7 +226,10 @@ It uses ES modules, so opening `file://` will not work; a static server is requi
 ## Tests
 
 ```sh
-python3 tests/run_tests.py            # 146 unit tests
+npm test                              # unit + interaction checks (same as the CI workflow)
+npm run test:unit                     # python3 tests/run_tests.py — 191 unit tests
+npm run test:e2e                      # python3 tests/e2e/app_checks.py — local server
+npm run test:e2e:live                 # same checks against the deployment
 python3 tests/visual/capture.py --check   # Chromium screen checks
 python3 tests/visual/capture.py       # checks + refresh screenshots
 python3 tests/visual/portal_menu_check.py --check   # header `…` portal dropdown
@@ -240,7 +243,14 @@ python3 tools/generate_brand_assets.py             # regenerate favicons and the
   duplicates, total), search and walking deep links, POI data integrity (800 m radius, coordinates, links)**,
   **live POI parsing (category, name clean-up, distance, walking time, parking, de-duplication, cap), Overpass
   query and bbox, built-in + live merge, course built from live POIs only, mirror fallback, timeout and
-  session cache**
+  session cache**, **geocoding adapter (shared rate limiter, cache TTL, timeout, 429 retry, Photon
+  `lang=default` fallback, merge on zero Nominatim results, in-flight de-duplication, proxy injection)**,
+  **live POI cache key precision (6 decimals, 50 m moves re-query), direction fallbacks for app-only
+  providers (Tmap → Kakao car web route)**
+- Interaction checks (`tests/e2e/app_checks.py`): duplicate-origin participants, name input focus during async
+  renders, car-anchor share round trip, Kakao deep-link rules, **app-uninstalled fallback that preserves the
+  Midpoint screen (new tab or in-app bar), Tmap → Kakao car fallback**, two fairness baselines, zoom allowed,
+  **Nominatim 0-result → Photon `lang=default` rows**, pin taps after a place focus (deployed build)
 - Screen checks: map tile load, pin and marker counts, result card, URL state, share-link round trip, mode
   switch, delete/clear, mobile sheet collapse and expand,
   **Gangnam, Hongdae, Seomyeon and Gimhae course cards and tab switching, map ①/② markers and polyline,
