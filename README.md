@@ -201,16 +201,20 @@ PKPilot0002/
 - KTX/SRT stations, bus terminals and large parking hubs: `tools/data/*.json` (checked by hand)
 - Address search and reverse geocoding: Nominatim first, Photon as the fallback. Both share **one client-side
   queue** (≈1.1 s between requests), a 30-minute memory cache, in-flight de-duplication (queries and reverse
-  calls) and a 7-day `localStorage` address store. A 429 puts Nominatim into a **cooldown** (1 minute,
-  doubling to 10 minutes, `Retry-After` honoured) during which Photon answers and the primary is probed
-  again afterwards. Photon is always asked with `lang=default` — it rejects `ko` with HTTP 400 — for search
-  *and* reverse.
+  calls) and a 7-day `localStorage` address store. A user search jumps ahead of the queued reverse lookups
+  (priority), and a reverse lookup is dropped from the queue — or aborted — as soon as its participant is
+  gone. A 429 is **not retried**: the app switches to Photon at once and uses `Retry-After` as the Nominatim
+  reuse limit (cooldown 1 minute, doubling to 10 minutes); the streak resets after a normal answer. Photon is
+  always asked with `lang=default` — it rejects `ko` with HTTP 400 — for search *and* reverse.
+  Search rows from both providers are merged on OSM id, name, address and coordinates — never on distance
+  alone, so two different shops 20 m apart both stay.
 
   There is no shared backend behind a static site. To move the traffic off the public instances, point the
   app at a proxy before it loads — `globalThis.HD2_GEOCODE_PROXY = 'https://<host>/midpoint/geo'` (or
   `createGeocoder({ proxyUrl })` in code). The route contract is `…/nominatim/search`,
   `…/nominatim/reverse`, `…/photon/api`, `…/photon/reverse`; the client queue, cache and cooldown keep
-  working unchanged.
+  working unchanged. **No proxy server is deployed yet** — usage policy, failure paths and the remaining
+  gaps are written down in [docs/operations.md](docs/operations.md).
 
 ```sh
 python3 tools/build_network.py            # reuse cache
@@ -238,8 +242,9 @@ It uses ES modules, so opening `file://` will not work; a static server is requi
 ## Tests
 
 ```sh
-npm test                              # unit + interaction checks (same as the CI workflow)
-npm run test:unit                     # python3 tests/run_tests.py — 199 unit tests
+npm test                              # repo checks + unit + interaction checks
+npm run test:repo                     # python3 tests/check_repo.py — CI copy is pure YAML
+npm run test:unit                     # python3 tests/run_tests.py — 214 unit tests
 npm run test:e2e                      # python3 tests/e2e/app_checks.py — local server
 npm run test:e2e:live                 # same checks against the deployment
 python3 tests/visual/capture.py --check   # Chromium screen checks
@@ -255,9 +260,11 @@ python3 tools/generate_brand_assets.py             # regenerate favicons and the
   duplicates, total), search and walking deep links, POI data integrity (800 m radius, coordinates, links)**,
   **live POI parsing (category, name clean-up, distance, walking time, parking, de-duplication, cap), Overpass
   query and bbox, built-in + live merge, course built from live POIs only, mirror fallback, timeout and
-  session cache**, **geocoding adapter (shared rate limiter, cache TTL, timeout, 429 retry, 429 cooldown that
-  switches to Photon for 1–10 min, `Retry-After` handling, Photon `lang=default` for search *and* reverse,
-  merge on zero Nominatim results, reverse-geocode `no_result` vs failure, in-flight de-duplication for
+  session cache**, **geocoding adapter (shared rate limiter, search priority over reverse lookups, cancelling
+  a reverse lookup that is no longer needed, cache TTL, timeout, 429 → immediate Photon without a 120 s wait,
+  429 cooldown that switches to Photon for 1–10 min, `Retry-After` handling, streak reset after recovery,
+  Photon `lang=default` for search *and* reverse, merge on zero Nominatim results, duplicate rows judged on
+  OSM id/name/address/coordinates, reverse-geocode `no_result` vs failure, in-flight de-duplication for
   queries and reverse calls, proxy injection)**, **coordinate key precision (one 6-decimal key shared by the
   geocoder, the address store and the live POI cache), direction fallbacks for app-only providers
   (Tmap → Kakao car web route)**
@@ -266,7 +273,10 @@ python3 tools/generate_brand_assets.py             # regenerate favicons and the
   Midpoint screen (new tab or in-app bar) and stays quiet when the app really opens (blur/pagehide), Tmap →
   Kakao car fallback**, two fairness baselines, zoom allowed, **Nominatim 0-result → Photon `lang=default`
   rows, Nominatim reverse failure → Photon reverse with `lang=default`, live “0 places” vs “lookup failed”
-  shown differently**, pin taps after a place focus (deployed build)
+  shown differently, **429 + `Retry-After: 120` → Photon row within seconds, a late search response never
+  overwrites a changed query / closed list (Escape, selection), two shops 20 m apart both listed, a bbox
+  zero-result not ending the live lookup before a later Overpass answer, 12 queued reverse lookups not
+  delaying a new search**, pin taps after a place focus (deployed build)
 - Screen checks: map tile load, pin and marker counts, result card, URL state, share-link round trip, mode
   switch, delete/clear, mobile sheet collapse and expand,
   **Gangnam, Hongdae, Seomyeon and Gimhae course cards and tab switching, map ①/② markers and polyline,

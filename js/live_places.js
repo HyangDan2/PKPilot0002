@@ -44,6 +44,13 @@ export const OVERPASS_ENDPOINTS = [
   { id: 'overpass-kumi', url: 'https://overpass.kumi.systems/api/interpreter', delayMs: 2500 },
   { id: 'overpass-private.coffee', url: 'https://overpass.private.coffee/api/interpreter', delayMs: 5200 },
 ];
+/**
+ * 0건 응답을 받은 뒤 다른 요청의 유효한 응답을 더 기다리는 시간.
+ * OSM 지도 API(bbox 전체) 0건 하나로 전체 조회를 끝내면, 아직 살아 있는
+ * Overpass 요청이 곧 돌려줄 장소까지 버리게 된다.
+ */
+export const EMPTY_SETTLE_GRACE_MS = 2500;
+const EMPTY_SETTLE_GRACE_MAX_MS = 6000;
 /** Overpass 가 모두 밀릴 때의 후퇴로 — 다른 인프라(OSM Rails API). */
 export const OSM_MAP_ATTEMPT = { id: 'osm-map-api', url: OSM_MAP_ENDPOINT, delayMs: 3600, kind: 'osm-map' };
 
@@ -583,8 +590,7 @@ export async function loadLivePlaces(options = {}) {
   const timeoutMs = options.timeoutMs ?? 11000;
   const plan = options.plan || liveAttemptPlan(lat, lng, radiusKm);
   const startedAt = Date.now();
-  const attempts = [];
-  const requestId = liveRequestSeq + 1;
+  const attempts = [];  const requestId = liveRequestSeq + 1;
   liveRequestSeq = requestId;
   // 이전 조회는 끊어 네트워크·파싱을 낭비하지 않는다.
   if (livePendingAbort) {
@@ -600,6 +606,7 @@ export async function loadLivePlaces(options = {}) {
     let settled = false;
     let pending = plan.length;
     let emptyResult = null;
+    let graceTimer = null;
     const controllers = new Set();
     const timers = new Set();
     const abortSelf = () => {
@@ -616,6 +623,7 @@ export async function loadLivePlaces(options = {}) {
     const cleanup = () => {
       for (const timer of timers) clearTimeout(timer);
       timers.clear();
+      graceTimer = null;
     };
 
     const finish = (result) => {
@@ -652,6 +660,26 @@ export async function loadLivePlaces(options = {}) {
       if (pending <= 0) {
         if (emptyResult) finish(emptyResult);
         else fail();
+        return;
+      }
+      // 아직 시작하지 않은 요청이 있으면 그 시작 시각 + 여유까지, 나머지는 짧게 더 기다린다.
+      if (!graceTimer) {
+        const elapsed = Date.now() - startedAt;
+        const notStartedYet = plan.reduce(
+          (longest, item) => Math.max(longest, (item.delayMs || 0) - elapsed), 0);
+        // 테스트에서 graceMs 를 주면 그 값을 그대로 쓴다 (대기 상한을 재현하기 쉽게).
+        const explicit = Number.isFinite(Number(options.graceMs)) ? Number(options.graceMs) : null;
+        const wait = explicit !== null
+          ? Math.max(0, explicit)
+          : Math.min(
+            EMPTY_SETTLE_GRACE_MAX_MS,
+            Math.max(EMPTY_SETTLE_GRACE_MS, notStartedYet + 1200),
+          );
+        graceTimer = setTimeout(() => {
+          graceTimer = null;
+          if (!settled && emptyResult) finish(emptyResult);
+        }, wait);
+        timers.add(graceTimer);
       }
     };
 
@@ -697,12 +725,10 @@ export async function loadLivePlaces(options = {}) {
           finish({ places, source: attempt.kind, endpoint: attempt.url, cached: false });
         } else {
           const empty = { places: [], source: attempt.kind, endpoint: attempt.url, cached: false };
-          // bbox 전체를 받는 OSM 지도 API 의 0건은 "정말 없다"로 본다.
-          if (attempt.kind === 'osm-map') finish(empty);
-          else {
-            if (!emptyResult) emptyResult = empty;
-            settleEmpty();
-          }
+          // 0건 하나로 전체 조회를 끝내지 않는다 — OSM 지도 API 0건도 "기다려 볼" 신호다.
+          // 다른 요청이 유효한 응답을 가져오면 그쪽이 이긴다(settleEmpty → grace).
+          if (!emptyResult) emptyResult = empty;
+          settleEmpty();
         }
       } catch (error) {
         record.error = String((error && error.name === 'AbortError') ? 'timeout' : (error && error.message) || error);

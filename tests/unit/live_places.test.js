@@ -513,7 +513,7 @@ test('loadLivePlaces: Overpass 가 0건이면 OSM 지도 API 결과를 기다린
   assertEqual(result.source, 'osm-map');
 });
 
-test('loadLivePlaces: bbox 전체를 받는 OSM 지도 API 0건은 "정말 없음"으로 확정', async () => {
+test('loadLivePlaces: 모든 조회가 0건이면 잠시 더 기다린 뒤 빈 결과로 확정', async () => {
   clearLiveCache();
   const fetchImpl = async () => jsonResponse({ elements: [] });
   const plan = [
@@ -524,6 +524,89 @@ test('loadLivePlaces: bbox 전체를 받는 OSM 지도 API 0건은 "정말 없�
   const result = await loadLivePlaces({ lat: SADANG.lat, lng: SADANG.lng, radiusKm: 1, fetchImpl, plan, timeoutMs: 5000 });
   assertEqual(result.places.length, 0);
   assert(Date.now() - started < 4000, '빈 결과인데 오래 기다렸다');
+});
+
+/* ------------------------------------------------------------------
+   WO-05 · 0건 하나로 전체 조회를 끝내지 않는다
+   ------------------------------------------------------------------ */
+
+test('WO-05: OSM 지도 API 0건이 먼저 와도 늦게 온 Overpass 결과를 쓴다', async () => {
+  clearLiveCache();
+  const events = [];
+  const fetchImpl = async url => {
+    events.push(url);
+    if (url.includes('osm.example')) return jsonResponse({ elements: [] });
+    await new Promise(resolve => setTimeout(resolve, 180));
+    return jsonResponse(overpassFixture());
+  };
+  const plan = [
+    { id: 'osm', kind: 'osm-map', url: 'https://osm.example/map.json', delayMs: 0 },
+    { id: 'overpass', kind: 'overpass', url: 'https://overpass.example/1', delayMs: 10, query: 'q' },
+  ];
+  const result = await loadLivePlaces({ lat: SADANG.lat, lng: SADANG.lng, radiusKm: 1, fetchImpl, plan, timeoutMs: 5000 });
+  assert(result.places.length > 0, 'OSM 0건에서 전체 조회를 끝내 Overpass 결과를 버렸다');
+  assertEqual(result.source, 'overpass');
+});
+
+test('WO-05: 0건 + 타임아웃 + 부분 성공이 섞여도 유효한 응답을 모은다', async () => {
+  clearLiveCache();
+  const fetchImpl = (url, init) => {
+    if (url.includes('empty')) return Promise.resolve(jsonResponse({ elements: [] }));
+    if (url.includes('slow')) {
+      return new Promise((resolve, reject) => {
+        init.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+      });
+    }
+    return Promise.resolve(jsonResponse(overpassFixture()));
+  };
+  const plan = [
+    { id: 'empty', kind: 'overpass', url: 'https://empty.example/1', delayMs: 0, query: 'q' },
+    { id: 'slow', kind: 'overpass', url: 'https://slow.example/2', delayMs: 0, query: 'q' },
+    { id: 'good', kind: 'overpass', url: 'https://good.example/3', delayMs: 120, query: 'q' },
+  ];
+  const result = await loadLivePlaces({
+    lat: SADANG.lat, lng: SADANG.lng, radiusKm: 1, fetchImpl, plan, timeoutMs: 400,
+  });
+  assert(result.places.length > 0, '부분 성공 결과를 쓰지 않았다');
+  assertEqual(result.source, 'overpass');
+  assert(result.attempts.some(item => item.id === 'slow' && !item.ok), '타임아웃이 기록되지 않았다');
+  assert(result.attempts.some(item => item.id === 'empty' && item.ok), '0건 응답이 기록되지 않았다');
+});
+
+test('WO-05: 0건 뒤 다른 요청까지 모두 실패하면 빈 결과(장애 아님)', async () => {
+  clearLiveCache();
+  const fetchImpl = async url => {
+    if (url.includes('osm.example')) return jsonResponse({ elements: [] });
+    throw new Error('HTTP 503');
+  };
+  const plan = [
+    { id: 'osm', kind: 'osm-map', url: 'https://osm.example/map.json', delayMs: 0 },
+    { id: 'overpass', kind: 'overpass', url: 'https://overpass.example/1', delayMs: 20, query: 'q' },
+  ];
+  const result = await loadLivePlaces({ lat: SADANG.lat, lng: SADANG.lng, radiusKm: 1, fetchImpl, plan, timeoutMs: 2000 });
+  assertEqual(result.places.length, 0);
+  assertEqual(result.source, 'osm-map', '진짜 0곳과 장애를 구분하지 않았다');
+});
+
+test('WO-05: 0건 뒤 기다리는 시간은 graceMs 로 묶인다', async () => {
+  clearLiveCache();
+  const fetchImpl = (url, init) => {
+    if (url.includes('osm.example')) return Promise.resolve(jsonResponse({ elements: [] }));
+    return new Promise((resolve, reject) => {
+      init.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+    });
+  };
+  const plan = [
+    { id: 'osm', kind: 'osm-map', url: 'https://osm.example/map.json', delayMs: 0 },
+    { id: 'slow', kind: 'overpass', url: 'https://slow.example/1', delayMs: 500, query: 'q' },
+  ];
+  const started = Date.now();
+  const result = await loadLivePlaces({
+    lat: SADANG.lat, lng: SADANG.lng, radiusKm: 1, fetchImpl, plan, timeoutMs: 5000, graceMs: 120,
+  });
+  const elapsed = Date.now() - started;
+  assertEqual(result.places.length, 0);
+  assert(elapsed < 400, `0건 확정이 ${elapsed}ms 로 늦었다 (graceMs 무시)`);
 });
 
 test('loadLivePlaces: 좌표가 없으면 즉시 실패', async () => {

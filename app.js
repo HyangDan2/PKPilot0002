@@ -31,7 +31,7 @@ import {
   travelModeOf,
   walkMinutesForMeters,
   walkingMinutes,
-} from './js/core.js?v=20261122-p1p2v3';
+} from './js/core.js?v=20261123-p1p2v4';
 import {
   LIVE_RADIUS_KM,
   MAX_LIVE_RADIUS_KM,
@@ -39,7 +39,7 @@ import {
   liveCacheKey,
   loadLivePlaces,
   needsLiveSearch,
-} from './js/live_places.js?v=20261122-p1p2v3';
+} from './js/live_places.js?v=20261123-p1p2v4';
 import { LINES, STATIONS } from './js/stations.js';
 import { DRIVING_SPOTS, ROADS } from './js/driving_spots.js';
 import { LANDMARKS } from './js/landmarks.js';
@@ -53,8 +53,8 @@ import {
   naverDirectionsUrl,
   placeSearchUrl,
   providerList,
-} from './js/directions.js?v=20261122-p1p2v3';
-import { coordKey, geocoder } from './js/geocode.js?v=20261122-p1p2v3';
+} from './js/directions.js?v=20261123-p1p2v4';
+import { coordKey, geocoder } from './js/geocode.js?v=20261123-p1p2v4';
 
 /* ------------------------------------------------------------------
    상수
@@ -421,7 +421,7 @@ function installMapInteractions() {
     if (!holder || event.button > 0 || !mapReady()) return;
     const point = state.points.find(p => p.id === holder.dataset.pin);
     if (!point) return;
-    pinDrag = { point, pointerId: event.pointerId, moved: false };
+    pinDrag = { point, pointerId: event.pointerId, moved: false, fromKey: coordKey(point.lat, point.lng) };
     try {
       holder.setPointerCapture(event.pointerId);
     } catch {
@@ -449,11 +449,13 @@ function installMapInteractions() {
 
   const endDrag = () => {
     if (!pinDrag) return;
-    const { point, moved } = pinDrag;
+    const { point, moved, fromKey } = pinDrag;
     pinDrag = null;
     if (mapReady()) map.setOptions({ draggable: true });
     document.body.classList.remove('is-dragging-pin');
     if (!moved) return;
+    // 다른 자리로 끌었으면 예전 좌표의 역주소는 더 필요 없다 — 큐에서 빼거나 끊는다.
+    if (fromKey) cancelAddressKey(fromKey, point);
     point.address = '';
     point.addressState = 'idle';
     requestAddress(point);
@@ -548,7 +550,8 @@ function addPoint({ lat, lng, name, address, source = 'other' }) {
 function removePoint(id) {
   const index = state.points.findIndex(p => p.id === id);
   if (index < 0) return;
-  state.points.splice(index, 1);
+  const [removed] = state.points.splice(index, 1);
+  cancelAddress(removed);
   const marker = markers.get(id);
   if (marker) {
     layers.person.delete(marker);
@@ -561,7 +564,10 @@ function removePoint(id) {
 
 function resetAll() {
   if (!state.points.length) return;
+  const cleared = state.points;
   state.points = [];
+  // 남은 참가자가 없으니 진행 중·대기 중인 역주소 요청은 모두 끊는다.
+  cleared.forEach(point => geocoder.cancelReverse(point._addrKey || coordKey(point.lat, point.lng)));
   markers.forEach(marker => marker.setMap(null));
   markers.clear();
   layers.person.clear();
@@ -614,6 +620,7 @@ function saveGeoStore() {
 function requestAddress(point) {
   // 주소 저장소·지오코더 캐시·실시간 POI 캐시가 같은 자릿수(6)를 쓰도록 한 함수를 거친다.
   const key = coordKey(point.lat, point.lng);
+  point._addrKey = key;
   const stored = addressStore.get(key);
   if (stored && stored.text) {
     // 이전 방문에서 받아 둔 주소 — 네트워크 없이 바로 채운다
@@ -626,6 +633,7 @@ function requestAddress(point) {
     // 그 사이 참가자가 지워졌거나 다른 자리로 끌렸으면 건드리지 않는다.
     if (!state.points.includes(point)) return;
     if (point.lat !== origin.lat || point.lng !== origin.lng) return;
+    if (result?.error === 'cancelled') return;
     const text = result?.text || '';
     if (text) {
       addressStore.set(key, { text, at: Date.now() });
@@ -633,6 +641,19 @@ function requestAddress(point) {
     }
     applyAddress(point, text);
   });
+}
+
+/** 좌표 키 하나의 역주소 요청을 취소한다 — 같은 자리에 다른 참가자가 남아 있으면 둔다. */
+function cancelAddressKey(key, except = null) {
+  if (!key) return;
+  const stillNeeded = state.points.some(p => p !== except && coordKey(p.lat, p.lng) === key);
+  if (!stillNeeded) geocoder.cancelReverse(key);
+}
+
+function cancelAddress(point) {
+  if (!point) return;
+  const key = point._addrKey || coordKey(point.lat, point.lng);
+  cancelAddressKey(key, point);
 }
 
 function applyAddress(point, text) {
@@ -661,6 +682,17 @@ let searchRows = [];   // 지금 드롭다운에 그려진 항목들
 let searchToken = 0;
 let suggestTimer = null;
 let activeIndex = -1;
+
+/**
+ * 진행 중인 주소 검색을 무효로 만든다 — 입력이 바뀌거나 목록을 닫으면
+ * 늦게 도착한 예전 응답이 지금 목록을 덮어쓰지 못하게 한다.
+ */
+function invalidateSearch() {
+  searchToken += 1;
+  // 무효화된 검색은 버튼 상태도 되돌린다 (진행 중이던 검색이 삼켜지지 않도록)
+  el.searchBtn.disabled = false;
+  return searchToken;
+}
 
 function lineText(codes) {
   return (codes || []).map(code => lineMeta(code, LINES).name).join(' · ');
@@ -731,6 +763,7 @@ function renderSearchRows(rows, options = {}) {
 }
 
 function hideSearchResults() {
+  invalidateSearch();
   el.searchResults.hidden = true;
   el.searchResults.innerHTML = '';
   el.searchInput.setAttribute('aria-expanded', 'false');
@@ -765,7 +798,7 @@ function applySearchRow(row) {
   });
   if (added) {
     el.searchInput.value = '';
-    hideSearchResults();
+    hideSearchResults(); // 진행 중이던 예전 응답도 함께 무효화된다
     // iOS 키보드를 접어 결과 지도를 보여준다
     if (document.activeElement === el.searchInput) el.searchInput.blur();
   }
@@ -780,13 +813,14 @@ function chooseSearchRow(index) {
 async function runSearch(term) {
   const query = term.trim();
   if (!query) return;
+  const token = invalidateSearch();
   el.searchBtn.disabled = true;
-  const token = ++searchToken;
+  const stillCurrent = () => token === searchToken && el.searchInput.value.trim() === query;
   // 주소 검색은 응답이 늦을 수 있다 — 먼저 '찾는 중'을 보여 준다.
   renderSearchRows([], { empty: '주소·장소 검색 중…' });
   try {
     const found = await geocoder.search(query);
-    if (token !== searchToken) return;
+    if (!stillCurrent()) return;
     const rows = (found || []).map(item => ({
       name: item.name,
       address: item.address,
@@ -798,7 +832,7 @@ async function runSearch(term) {
     // Nominatim 이 막혔거나 결과가 없으면 Photon 으로 한 번 더 — 어댑터가 이미 처리했다.
     renderSearchRows(rows, { empty: `‘${query}’ 주소를 찾지 못했어요. 지도에서 직접 찍어 보세요.` });
   } catch (error) {
-    if (token !== searchToken) return;
+    if (!stillCurrent()) return;
     const code = error?.code || '';
     let message = '검색에 실패했어요. 잠시 후 다시 시도해 주세요.';
     if (code === 'timeout') message = '검색이 너무 오래 걸렸어요 — 잠시 뒤 다시 시도하거나 지도에서 직접 찍어 주세요.';
@@ -813,13 +847,16 @@ async function runSearch(term) {
 // 입력하는 즉시 내장 역·거점을 120ms 디바운스로 보여준다
 function scheduleSuggest() {
   clearTimeout(suggestTimer);
+  // 입력이 바뀌면 예전 검색 응답은 더 이상 지금 목록의 답이 아니다.
+  invalidateSearch();
   const term = el.searchInput.value.trim();
   if (!term) {
     hideSearchResults();
     return;
   }
   suggestTimer = setTimeout(() => {
-    if (!el.searchInput.value.trim()) return;
+    // 타이머가 돈 사이 입력이 또 바뀌었다면 예전 질의의 목록을 그리지 않는다.
+    if (el.searchInput.value.trim() !== term) return;
     renderSearchRows(localSuggestions(term), { remoteTerm: term });
   }, SUGGEST_DELAY);
 }
@@ -2376,6 +2413,8 @@ function initHeaderEvents() {
    초기 상태 불러오기
    ------------------------------------------------------------------ */
 function loadPoints(points, mode, notify = true, travelMode = null, carAnchor = null) {
+  // 공유 링크로 목록을 갈아끼우면 이전 참가자들의 역주소 요청은 버린다.
+  state.points.forEach(point => geocoder.cancelReverse(point._addrKey || coordKey(point.lat, point.lng)));
   state.points = points.map((p, i) => {
     seq += 1;
     return {

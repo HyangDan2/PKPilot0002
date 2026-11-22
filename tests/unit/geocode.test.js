@@ -13,7 +13,9 @@ import {
   createRateLimiter,
   describeNominatimAddress,
   describePhotonAddress,
+  isSameSearchPlace,
   mergeSearchRows,
+  metersApart,
   proxyEndpoints,
   retryAfterMsOf,
 } from '../../js/geocode.js';
@@ -104,7 +106,7 @@ test('검색: Nominatim 결과를 앱 형식으로 돌려준다', async () => {
   assertEqual(rows[0].source, 'nominatim');
 });
 
-test('검색: 429 면 재시도 뒤 Photon 으로 넘어간다', async () => {
+test('검색: 429 는 재시도 없이 즉시 Photon 으로 넘어간다', async () => {
   let nominatimCalls = 0;
   const fetchImpl = fetchStub([
     ['nominatim.openstreetmap.org/search', () => {
@@ -115,7 +117,8 @@ test('검색: 429 면 재시도 뒤 Photon 으로 넘어간다', async () => {
   ]);
   const geocoder = createGeocoder({ fetchImpl, minIntervalMs: 0, retryDelayMs: 5, retries: 1 });
   const rows = await geocoder.search('강남역');
-  assertEqual(nominatimCalls, 2, '429 에서 한 번 재시도하지 않았다');
+  // 429 를 다시 두드리면 서버 부하만 늘고, Retry-After 를 기다리면 대체 검색이 늦어진다.
+  assertEqual(nominatimCalls, 1, `429 인데 ${nominatimCalls}번 요청했다`);
   assertEqual(rows.length, 1);
   assertEqual(rows[0].source, 'photon');
   assertEqual(rows[0].lng, 127.0276);
@@ -515,4 +518,204 @@ test('좌표 키: 지오코더와 실시간 POI 캐시가 같은 6자리 표기�
   assertEqual(coordKey(37.49791234, 127.02761234), anchorCoordKey(37.49791234, 127.02761234));
   assert(coordKey(37.4979, 127.0276) !== coordKey(37.49795, 127.0276),
     '5m 이동을 같은 좌표 키로 뭉갰다 (4자리 키)');
+});
+
+/* ------------------------------------------------------------------
+   WO-02 · 429 + Retry-After:120 — 대체 검색이 120초를 기다리지 않는다
+   ------------------------------------------------------------------ */
+
+test('WO-02: 429 + Retry-After 120초에도 Photon 결과가 곧바로 온다', async () => {
+  const events = [];
+  const fetchImpl = fetchStub([
+    ['nominatim.openstreetmap.org/search', () => {
+      events.push({ url: 'nominatim', at: Date.now() });
+      return tooMany('120');
+    }],
+    ['photon.komoot.io/api', () => {
+      events.push({ url: 'photon', at: Date.now() });
+      return json(PHOTON_SEARCH);
+    }],
+  ]);
+  const geocoder = createGeocoder({ fetchImpl, minIntervalMs: 0, retries: 1, cooldownMs: 60_000 });
+  const started = Date.now();
+  const rows = await geocoder.search('강남역');
+  const elapsed = Date.now() - started;
+
+  assertEqual(rows.length, 1);
+  assertEqual(rows[0].source, 'photon');
+  // 예전에는 Retry-After 120초를 그대로 기다려 대체 검색이 2분 뒤에야 나왔다.
+  assert(elapsed < 2000, `429 대체 검색이 ${elapsed}ms 걸렸다 (120초 대기 의심)`);
+  const nominatimCalls = events.filter(item => item.url === 'nominatim');
+  const photonCalls = events.filter(item => item.url === 'photon');
+  assertEqual(nominatimCalls.length, 1, `429 에서 ${nominatimCalls.length}번 두드렸다`);
+  assertEqual(photonCalls.length, 1, 'Photon 대체 검색을 부르지 않았다');
+  // Retry-After 는 Nominatim 재사용 제한 시각으로 남는다.
+  const state = geocoder.providerState();
+  assert(state.remainingMs >= 119_000, `Retry-After 를 쿨다운에 반영하지 않았다: ${state.remainingMs}ms`);
+  assertEqual(state.cooldownStreak, 1);
+});
+
+test('WO-02: 429 가 쿨다운 중이면 대체 검색도 지연 없이 나간다', async () => {
+  let now = 1_000_000;
+  const fetchImpl = fetchStub([
+    ['nominatim.openstreetmap.org/search', () => tooMany('120')],
+    ['photon.komoot.io/api', () => json(PHOTON_SEARCH)],
+  ]);
+  const geocoder = createGeocoder({ fetchImpl, minIntervalMs: 0, retries: 1, now: () => now });
+  await geocoder.search('강남역');
+  now += 1_000;
+  const started = Date.now();
+  const rows = await geocoder.search('역삼역');
+  assertEqual(rows[0].source, 'photon');
+  assert(Date.now() - started < 1000, '쿨다운 중 검색이 늦어졌다');
+  assertEqual(geocoder.providerState().coolingDown, true);
+});
+
+test('WO-02: 정상 복구 뒤 연속 실패 횟수가 0으로 돌아간다', async () => {
+  let now = 1_000_000;
+  let mode = '429';
+  const fetchImpl = fetchStub([
+    ['nominatim.openstreetmap.org/search', () => (mode === 'ok' ? json(NOMINATIM_SEARCH) : tooMany())],
+    ['photon.komoot.io/api', () => json(PHOTON_SEARCH)],
+  ]);
+  const geocoder = createGeocoder({
+    fetchImpl, minIntervalMs: 0, retries: 0, cooldownMs: 10_000, cooldownMaxMs: 100_000, now: () => now,
+  });
+  await geocoder.search('강남역');
+  assertEqual(geocoder.providerState().cooldownStreak, 1);
+  assertEqual(geocoder.providerState().remainingMs, 10_000);
+
+  now += 10_000;          // 쿨다운 종료 → 주 제공자 정상 응답
+  mode = 'ok';
+  const rows = await geocoder.search('역삼역');
+  assertEqual(rows[0].source, 'nominatim');
+  assertEqual(geocoder.providerState().cooldownStreak, 0, '정상 응답 뒤에도 연속 실패 횟수가 남았다');
+  assertEqual(geocoder.providerState().coolingDown, false);
+
+  mode = '429';
+  await geocoder.search('선릉역');
+  assertEqual(geocoder.providerState().remainingMs, 10_000, '복구 뒤 첫 429 가 2배(20초)로 늘었다');
+});
+
+/* ------------------------------------------------------------------
+   WO-04 · 장소 중복 판정 — 거리만이 아니라 이름·주소·좌표·식별자
+   ------------------------------------------------------------------ */
+
+test('WO-04: 20m 떨어진 다른 가게는 거리만으로 합치지 않는다', () => {
+  const a = { name: '진미평양냉면', address: '서울 강남구 논현로 123', lat: 37.5000, lng: 127.0300 };
+  const b = { name: '을지면옥', address: '서울 강남구 논현로 125', lat: 37.50018, lng: 127.0300 };
+  const meters = metersApart(a, b);
+  assert(meters > 5 && meters < 30, `테스트 좌표 거리가 ${meters.toFixed(1)}m 다`);
+  assert(!isSameSearchPlace(a, b), '다른 가게를 같은 곳으로 합쳤다');
+  assertEqual(mergeSearchRows([a], [b]).length, 2, '근접한 다른 장소가 사라졌다');
+});
+
+test('WO-04: 같은 건물(같은 주소)의 다른 가게도 각각 남는다', () => {
+  const mallA = { name: '스시로', address: '서울 송파구 올림픽로 300', lat: 37.5145, lng: 127.1060 };
+  const mallB = { name: '스타벅스 롯데월드몰점', address: '서울 송파구 올림픽로 300', lat: 37.51452, lng: 127.10602 };
+  assertEqual(mergeSearchRows([mallA], [mallB]).length, 2, '같은 건물의 다른 가게를 합쳤다');
+});
+
+test('WO-04: 같은 이름이면 60m 안까지 같은 곳(제공자 중복 등록)', () => {
+  const nominatim = { name: '강남역', address: '서울 강남구 강남대로 396', lat: 37.4979, lng: 127.0276 };
+  const photon = { name: '강남역', address: '서울특별시 강남구 강남대로', lat: 37.49818, lng: 127.0276 };
+  const meters = metersApart(nominatim, photon);
+  assert(meters > 20 && meters < 60, `테스트 좌표 거리가 ${meters.toFixed(1)}m 다`);
+  assertEqual(mergeSearchRows([nominatim], [photon]).length, 1);
+
+  // 같은 이름이라도 100m 넘게 떨어져 있으면 다른 지점이다.
+  const farBranch = { name: '강남역', address: '서울 강남구 테헤란로', lat: 37.4989, lng: 127.0276 };
+  assertEqual(mergeSearchRows([nominatim], [farBranch]).length, 2, '100m 떨어진 동명 지점을 합쳤다');
+});
+
+test('WO-04: OSM 식별자가 같으면 이름 표기가 달라도 같은 곳', () => {
+  const ko = { name: '광장시장 순희네빈대떡', lat: 37.5701, lng: 126.9997, id: 'osm:node/321' };
+  const en = { name: 'Soonhee Bindaetteok', lat: 37.57032, lng: 126.99972, id: 'osm:node/321' };
+  assertEqual(mergeSearchRows([ko], [en]).length, 1, '같은 OSM 객체를 두 번 보여 준다');
+  const other = { name: '다른 집', lat: 37.5701, lng: 126.9997, id: 'osm:node/999' };
+  assertEqual(mergeSearchRows([ko], [other]).length, 2, '식별자가 다른데 합쳤다');
+});
+
+/* ------------------------------------------------------------------
+   WO-06 · 큐 관리 — 사용자 검색 우선 · 불필요한 역주소 취소
+   ------------------------------------------------------------------ */
+
+test('WO-06: 역주소 12건이 쌓여도 사용자 검색이 먼저 나간다 (지연 측정)', async () => {
+  const order = [];
+  const fetchImpl = async url => {
+    order.push(url.includes('/reverse') ? 'reverse' : 'search');
+    if (url.includes('/reverse')) {
+      await sleep(20);
+      return json({ address: { road: '테스트로' }, display_name: '테스트로 1' });
+    }
+    return json(NOMINATIM_SEARCH);
+  };
+  const geocoder = createGeocoder({ fetchImpl, minIntervalMs: 120 });
+  const reverses = Array.from({ length: 12 }, (_, i) =>
+    geocoder.reverse({ lat: 37.5 + i * 0.001, lng: 127.0 }));
+  await sleep(30); // 첫 역주소가 진행 중, 나머지는 큐에 서 있다
+  const started = Date.now();
+  const rows = await geocoder.search('강남역');
+  const searchMs = Date.now() - started;
+  await Promise.all(reverses);
+
+  assertEqual(rows.length, 1);
+  assert(searchMs < 600, `검색이 역주소 12건 뒤로 밀렸다: ${searchMs}ms`);
+  const searchIndex = order.indexOf('search');
+  assert(searchIndex >= 0 && searchIndex <= 2,
+    `검색이 ${searchIndex}번째로 나갔다 (역주소 12건 뒤)`);
+});
+
+test('WO-06: 우선순위가 없으면 역주소 12건 뒤로 밀린다 (비교 기준)', async () => {
+  const schedule = createRateLimiter(50);
+  const tasks = Array.from({ length: 12 }, () => schedule(async () => {
+    await sleep(5);
+    return 'reverse';
+  }));
+  await sleep(10);
+  const started = Date.now();
+  await schedule(async () => 'search');
+  const fifoMs = Date.now() - started;
+  await Promise.all(tasks);
+  assert(fifoMs > 400, `FIFO 기준 지연이 의외로 짧다: ${fifoMs}ms (측정 기준이 흔들린다)`);
+});
+
+test('WO-06: 필요 없어진 역주소는 큐에서 빠져 네트워크를 쓰지 않는다', async () => {
+  const calls = [];
+  const fetchImpl = async url => {
+    calls.push(url);
+    await sleep(20);
+    return json({ address: { road: '테스트로' }, display_name: '테스트로 1' });
+  };
+  const geocoder = createGeocoder({ fetchImpl, minIntervalMs: 120 });
+  const first = geocoder.reverse({ lat: 37.11, lng: 127.11 });
+  const second = geocoder.reverse({ lat: 37.22, lng: 127.22 });
+  const third = geocoder.reverse({ lat: 37.33, lng: 127.33 });
+  await sleep(30);
+  assert(geocoder.cancelReverse({ lat: 37.22, lng: 127.22 }), '대기 중인 역주소를 취소하지 못했다');
+  assert(geocoder.cancelReverse('reverse:37.330000,127.330000'), '좌표 키로 취소하지 못했다');
+  const results = await Promise.all([first, second, third]);
+  const reverseCalls = calls.filter(url => url.includes('/reverse'));
+  assertEqual(reverseCalls.length, 1, `취소했는데 ${reverseCalls.length}건이 나갔다`);
+  assertEqual(results[1].error, 'cancelled');
+  assertEqual(results[2].error, 'cancelled');
+  assertEqual(geocoder.stats.cancelled, 2);
+  assertEqual(geocoder.reverse({ lat: 37.22, lng: 127.22 }) instanceof Promise, true);
+});
+
+test('WO-06: 진행 중인 역주소도 끊고 취소 결과를 돌려준다', async () => {
+  let aborted = false;
+  const fetchImpl = (url, init) => new Promise((resolve, reject) => {
+    init.signal.addEventListener('abort', () => {
+      aborted = true;
+      reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+    });
+  });
+  const geocoder = createGeocoder({ fetchImpl, minIntervalMs: 0, timeoutMs: 5000 });
+  const pending = geocoder.reverse({ lat: 37.44, lng: 127.44 });
+  await sleep(30);
+  assert(geocoder.cancelReverse({ lat: 37.44, lng: 127.44 }));
+  const result = await pending;
+  assert(aborted, '진행 중인 요청을 끊지 않았다');
+  assertEqual(result.error, 'cancelled');
 });

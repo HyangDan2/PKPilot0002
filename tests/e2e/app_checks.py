@@ -24,8 +24,10 @@ import json
 import re
 import sys
 import threading
+import time
 from functools import partial
 from pathlib import Path
+from urllib.parse import unquote
 
 ROOT = Path(__file__).resolve().parent.parent.parent   # PKPilot0002/
 REPO = ROOT.parent
@@ -61,7 +63,8 @@ def live_fixture(lat: float, lng: float) -> dict:
 
 
 def payload_for(request) -> dict:
-    body = request.post_data or ""
+    # Overpass 요청 본문은 URL 인코딩되어 온다 — around 좌표를 읽으려면 먼저 푼다.
+    body = unquote(request.post_data or "")
     around = re.search(r"around:\d+,([\d.]+),([\d.]+)", body)
     if around:
         return live_fixture(float(around.group(1)), float(around.group(2)))
@@ -101,7 +104,7 @@ def flush_live(state: dict, keep: int = 1) -> int:
     sent = 0
     while pending and sent < keep:
         route, request = pending.pop(0)
-        body = request.post_data or ""
+        body = unquote(request.post_data or "")
         around = re.search(r"around:\d+,([\d.]+),([\d.]+)", body)
         payload = live_fixture(float(around.group(1)), float(around.group(2))) if around else {"elements": []}
         try:
@@ -504,6 +507,187 @@ def main() -> int:
                 problems.append(f"Photon 역주소 언어가 default 가 아닙니다: {photon_reverse_calls[0]}")
         rev.close()
 
+        # ---------- WO-02: 429 + Retry-After 120 → Photon 이 곧바로 나온다 ----------
+        rate_calls: list[tuple[str, float]] = []
+
+        def nominatim_429(route):
+            rate_calls.append(("nominatim", time.monotonic()))
+            route.fulfill(status=429, headers={"Retry-After": "120"},
+                          content_type="application/json", body="{}")
+
+        def photon_ok(route):
+            rate_calls.append(("photon", time.monotonic()))
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps(photon_feature, ensure_ascii=False))
+
+        blocked = browser.new_page(viewport=DESKTOP)
+        blocked.route(re.compile(r"https://nominatim\.openstreetmap\.org/search.*"), nominatim_429)
+        blocked.route(re.compile(r"https://photon\.komoot\.io/api/.*"), photon_ok)
+        blocked.goto(base, wait_until="load")
+        blocked.wait_for_timeout(500)
+        blocked.fill("#searchInput", "사백이십구테스트")
+        started = time.monotonic()
+        blocked.press("#searchInput", "Enter")
+        try:
+            blocked.wait_for_selector('#searchResults li.res-row:has-text("포톤 대체역")', timeout=6000)
+        except Exception:
+            problems.append("WO-02: 429 + Retry-After 120 에서 Photon 결과가 6초 안에 나오지 않습니다")
+        else:
+            elapsed = time.monotonic() - started
+            print(f"  · WO-02 429(Retry-After 120) → Photon 결과까지 {elapsed * 1000:.0f}ms")
+            if elapsed > 5.0:
+                problems.append(f"WO-02: 429 대체 검색이 {elapsed:.1f}초 걸렸습니다 (Retry-After 대기 의심)")
+        blocked.close()
+
+        # ---------- WO-03: 늦은 응답이 지금 목록을 덮어쓰지 않는다 ----------
+        race = browser.new_page(viewport=DESKTOP)
+        held_routes: list = []
+
+        def hold_route(route):
+            held_routes.append(route)
+
+        race.route(re.compile(r"https://nominatim\.openstreetmap\.org/search.*"), hold_route)
+        race.route(re.compile(r"https://photon\.komoot\.io/api/.*"),
+                   lambda route: route.fulfill(status=200, content_type="application/json",
+                                               body='{"features": []}'))
+
+        def wait_held(count: int, timeout: float = 8.0) -> bool:
+            end = time.monotonic() + timeout
+            while len(held_routes) < count and time.monotonic() < end:
+                race.wait_for_timeout(100)
+            return len(held_routes) >= count
+
+        def fulfil(route, name: str, query_hint: str = "") -> None:
+            body = json.dumps([{
+                "display_name": f"{name} 주소", "name": name,
+                "lat": "37.5100", "lon": "127.0400",
+            }], ensure_ascii=False)
+            try:
+                route.fulfill(status=200, content_type="application/json", body=body)
+            except Exception as exc:  # 이미 끝난 요청
+                problems.append(f"WO-03: 응답 전달 실패 {name}: {exc}")
+
+        race.goto(base, wait_until="load")
+        race.wait_for_timeout(500)
+
+        # (1) 입력이 바뀐 뒤 도착한 예전 응답은 목록을 덮어쓰지 않는다
+        race.fill("#searchInput", "지연검색가")
+        race.press("#searchInput", "Enter")
+        if wait_held(1):
+            race.fill("#searchInput", "즉시검색나")     # 입력 변경 → 진행 중 검색 무효
+            fulfil(held_routes[0], "지연결과")
+            race.wait_for_timeout(900)
+            listing = race.locator("#searchResults").inner_text() if race.locator("#searchResults").count() else ""
+            if "지연결과" in listing:
+                problems.append("WO-03: 입력이 바뀐 뒤 늦게 온 예전 결과가 목록을 덮어썼습니다")
+            # 새 질의는 정상적으로 결과를 보여 준다
+            race.press("#searchInput", "Enter")
+            if wait_held(2):
+                fulfil(held_routes[1], "즉시결과")
+                try:
+                    race.wait_for_selector('#searchResults li.res-row:has-text("즉시결과")', timeout=6000)
+                except Exception:
+                    problems.append("WO-03: 새 검색 결과가 나오지 않았습니다")
+            else:
+                problems.append("WO-03: 새 검색 요청이 나가지 않았습니다")
+        else:
+            problems.append("WO-03: 첫 검색 요청이 나가지 않았습니다")
+
+        # (2) Escape 로 닫은 뒤 늦게 온 응답이 목록을 다시 열지 않는다
+        race.fill("#searchInput", "닫힌검색다")
+        race.press("#searchInput", "Enter")
+        if wait_held(3):
+            race.press("#searchInput", "Escape")
+            fulfil(held_routes[2], "닫힌결과")
+            race.wait_for_timeout(700)
+            if race.locator("#searchResults").is_visible():
+                problems.append("WO-03: Escape 로 닫은 목록이 늦은 응답으로 다시 열렸습니다")
+        else:
+            problems.append("WO-03: Escape 시험용 검색 요청이 나가지 않았습니다")
+
+        # (3) 결과를 고르면 목록이 닫히고 참가자가 추가된다
+        race.fill("#searchInput", "선택검색사")
+        race.press("#searchInput", "Enter")
+        if wait_held(4):
+            fulfil(held_routes[3], "선택결과")
+            try:
+                race.wait_for_selector('#searchResults li.res-row:has-text("선택결과")', timeout=6000)
+            except Exception:
+                problems.append("WO-03: 선택할 결과가 나오지 않았습니다")
+            before = race.locator(".participant").count()
+            race.click('#searchResults li.res-row:has-text("선택결과")')
+            race.wait_for_timeout(400)
+            after = race.locator(".participant").count()
+            if after != before + 1:
+                problems.append(f"WO-03: 검색 결과를 골라도 참가자가 추가되지 않았습니다: {before} → {after}")
+            if race.locator("#searchResults").is_visible():
+                problems.append("WO-03: 결과를 고른 뒤 목록이 닫히지 않았습니다")
+        else:
+            problems.append("WO-03: 선택 시험용 검색 요청이 나가지 않았습니다")
+        race.close()
+
+        # ---------- WO-04: 근접하지만 다른 장소를 둘 다 유지 ----------
+        nearby_rows = [
+            {"display_name": "서울 강남구 논현로 123", "name": "진미평양냉면",
+             "lat": "37.5000", "lon": "127.0300", "osm_type": "node", "osm_id": "771"},
+            {"display_name": "서울 강남구 논현로 125", "name": "을지면옥",
+             "lat": "37.50018", "lon": "127.0300", "osm_type": "node", "osm_id": "772"},
+        ]
+        near = browser.new_page(viewport=DESKTOP)
+        near.route(re.compile(r"https://nominatim\.openstreetmap\.org/search.*"),
+                   lambda route: route.fulfill(status=200, content_type="application/json",
+                                               body=json.dumps(nearby_rows, ensure_ascii=False)))
+        near.goto(base, wait_until="load")
+        near.wait_for_timeout(500)
+        near.fill("#searchInput", "근접장소테스트")
+        near.press("#searchInput", "Enter")
+        try:
+            near.wait_for_function(
+                "() => document.querySelectorAll('#searchResults li.res-row').length === 2",
+                timeout=6000,
+            )
+        except Exception:
+            count = near.locator("#searchResults li.res-row").count()
+            problems.append(f"WO-04: 20m 떨어진 다른 장소가 {count}건만 표시됩니다 (2건이어야 함)")
+        near.close()
+
+        # ---------- WO-06: 참가자 12명 역주소 중 새 주소 검색 지연 ----------
+        twelve = "|".join(f"{37.48 + i * 0.012:.4f},{126.98 + i * 0.011:.4f}" for i in range(12))
+        queue_page = browser.new_page(viewport=DESKTOP)
+        queue_page.route(re.compile(r"https://nominatim\.openstreetmap\.org/reverse.*"),
+                         lambda route: route.fulfill(
+                             status=200, content_type="application/json",
+                             body=json.dumps({"display_name": "서울 테스트구 테스트로 1",
+                                              "address": {"city": "서울특별시", "road": "테스트로"}},
+                                             ensure_ascii=False)))
+        queue_page.route(re.compile(r"https://nominatim\.openstreetmap\.org/search.*"),
+                         lambda route: route.fulfill(
+                             status=200, content_type="application/json",
+                             body=json.dumps([{"display_name": "서울 강남구 강남대로 396",
+                                               "name": "강남역", "lat": "37.4979", "lon": "127.0276"}],
+                                              ensure_ascii=False)))
+        queue_page.route(re.compile(r"https://photon\.komoot\.io/.*"),
+                         lambda route: route.fulfill(status=200, content_type="application/json",
+                                                     body='{"features": []}'))
+        queue_page.goto(f"{base}?p={twelve}", wait_until="load")
+        queue_page.wait_for_timeout(400)
+        registered = queue_page.locator(".participant").count()
+        if registered != 12:
+            problems.append(f"WO-06: 참가자 12명이 등록되지 않았습니다: {registered}명")
+        queue_page.fill("#searchInput", "큐지연측정")
+        queue_started = time.monotonic()
+        queue_page.press("#searchInput", "Enter")
+        try:
+            queue_page.wait_for_selector('#searchResults li.res-row:has-text("강남역")', timeout=9000)
+        except Exception:
+            problems.append("WO-06: 참가자 12명 역주소 중 새 주소 검색 결과가 9초 안에 나오지 않습니다")
+        else:
+            search_wait = time.monotonic() - queue_started
+            print(f"  · WO-06 참가자 12명 등록 중 새 주소 검색 응답 {search_wait * 1000:.0f}ms")
+            if search_wait > 6.0:
+                problems.append(f"WO-06: 검색 응답이 {search_wait:.1f}초로 역주소 큐에 밀렸습니다")
+        queue_page.close()
+
         # ---------- P2-05: 실시간 0곳과 조회 실패를 화면에서 구분 ----------
         def live_state_page(handler) -> str:
             page_live = browser.new_page(viewport=DESKTOP)
@@ -558,6 +742,48 @@ def main() -> int:
                 problems.append(f"조회 실패를 '실시간 0곳'으로 표시합니다: {state}")
             if state["body"] and not state["error"]:
                 problems.append(f"조회 실패 안내가 오류 문구가 아닙니다: {state['body']}")
+
+        # ---------- WO-05: OSM 지도 API 0건이 먼저 와도 Overpass 결과를 기다린다 ----------
+        held_overpass: list = []
+        live5 = browser.new_page(viewport=DESKTOP)
+        live5.route("**/api/interpreter", lambda route: held_overpass.append(route))
+        live5.route("**/api/0.6/map.json*",
+                    lambda route: route.fulfill(status=200, content_type="application/json",
+                                                body='{"elements": []}'))
+        live5.goto(base, wait_until="load")
+        live5.wait_for_timeout(400)
+        add_search(live5, "사당역", wait=200)
+        add_search(live5, "이수역", wait=200)
+        # 계획상 OSM 지도 API 는 3.6초에 출발한다 — 그 0건 응답이 먼저 도착하는 상황
+        live5.wait_for_timeout(4300)
+        state_after_osm_empty = live5.evaluate(
+            "() => { const chip = document.querySelector('.nearby-live');"
+            " return chip ? (chip.dataset.live || '') : 'no-chip'; }"
+        )
+        if state_after_osm_empty in ("empty", "error"):
+            problems.append(f"WO-05: OSM 지도 API 0건에서 전체 조회를 끝냈습니다: {state_after_osm_empty}")
+        elif not held_overpass:
+            problems.append("WO-05: Overpass 요청이 보류되지 않았습니다 (계획 확인 필요)")
+        else:
+            # 보류된 요청에는 예전 렌더의 것도 섞여 있다 — 모두 응답하고 최신 것 하나가 이긴다.
+            for route in held_overpass:
+                body = unquote(route.request.post_data or "")
+                around = re.search(r"around:\d+,([\d.]+),([\d.]+)", body)
+                payload = live_fixture(float(around.group(1)), float(around.group(2))) if around else {"elements": []}
+                try:
+                    route.fulfill(status=200, content_type="application/json",
+                                  body=json.dumps(payload, ensure_ascii=False))
+                except Exception as exc:
+                    problems.append(f"WO-05: 보류한 Overpass 응답 전달 실패: {exc}")
+            try:
+                live5.wait_for_function(
+                    "() => { const chip = document.querySelector('.nearby-live');"
+                    " return !!(chip && chip.dataset.live === 'ready'); }",
+                    timeout=9000,
+                )
+            except Exception:
+                problems.append("WO-05: 늦게 온 Overpass 결과로 장소를 채우지 못했습니다")
+        live5.close()
 
         # ---------- 배포본에서만: 지도 핀 상호작용 ----------
         if args.base:
