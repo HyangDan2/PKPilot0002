@@ -416,8 +416,13 @@ function rememberPersistently(entry) {
   writeStore(rows);
 }
 
+/** 거점 좌표 키 — 소수점 6자리(약 0.1m)까지 구분한다. 캐시와 화면이 같은 기준을 쓴다. */
+export function anchorCoordKey(lat, lng) {
+  return `${Number(lat).toFixed(6)},${Number(lng).toFixed(6)}`;
+}
+
 export function liveCacheKey(lat, lng, radiusKm = LIVE_RADIUS_KM) {
-  return `${Number(lat).toFixed(6)},${Number(lng).toFixed(6)}@${Number(radiusKm).toFixed(1)}`;
+  return `${anchorCoordKey(lat, lng)}@${Number(radiusKm).toFixed(1)}`;
 }
 
 /**

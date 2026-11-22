@@ -9,6 +9,8 @@
 - 비동기 렌더(실시간 조회) 중에도 이름 입력의 포커스·커서가 유지된다
 - 자차 만남 기준이 공유 URL 로 왕복한다 (t=car&a=highway)
 - 카카오맵 딥링크가 공식 규칙(sp·ep·by / link/by)으로 나온다
+- 앱 미설치 시 Midpoint 화면을 덮어쓰지 않고 새 탭/인앱 안내로 넘긴다 (티맵 → 카카오 자동차 경로)
+- Nominatim 이 0건이어도 Photon 결과를 lang=default 로 받아 보여 준다
 - 공평도 카드가 중심점 기준과 거점 기준을 구분해 보여 준다
 - 페이지 확대를 막지 않는다 (viewport 메타)
 
@@ -207,7 +209,17 @@ def main() -> int:
         browser = p.chromium.launch()
         page = browser.new_page(viewport=DESKTOP)
         console_errors: list[str] = []
-        page.on("pageerror", lambda exc: console_errors.append(str(exc)))
+
+        def on_pageerror(exc):
+            text = str(exc)
+            # 로컬(localhost)은 네이버 지도 키의 허용 도메인이 아니라 인증이 401 로 떨어지고,
+            # 그 실패 콜백이 SDK 내부에서 가끔 NullReference 를 던진다 — 앱 오류가 아니다.
+            # (허용 도메인인 배포본에서는 나지 않는다)
+            if "oapi.map.naver.com" in text:
+                return
+            console_errors.append(text)
+
+        page.on("pageerror", on_pageerror)
 
         def on_console(msg):
             if msg.type != "error":
@@ -343,7 +355,95 @@ def main() -> int:
                 problems.append(f"예전 형식이 남아 있습니다: {href}")
             if not app_link.get_attribute("data-app-fallback"):
                 problems.append("앱 미설치 시 웹 대체 경로가 없습니다")
+
+        # ---------- P2-04: 티맵 대체 경로 · Midpoint 화면 보존 ----------
+        ctx = mobile.context
+        ctx.route("https://map.kakao.com/**", lambda route: route.fulfill(
+            status=200, content_type="text/html", body="<h1>kakao map fallback</h1>"))
+        mobile.click('#modeToggle button[data-travel="car"]')
+        mobile.wait_for_timeout(700)
+        tmap_chip = mobile.locator('.nav-chip:has-text("티맵")').first
+        if tmap_chip.count() == 0:
+            problems.append("자차 모드에 티맵 길찾기가 없습니다")
+        else:
+            tmap_fallback = tmap_chip.get_attribute("data-app-fallback") or ""
+            if not tmap_fallback.startswith("https://map.kakao.com/link/by/car/"):
+                problems.append(f"티맵 앱 미설치 대체 경로가 카카오 자동차 길찾기가 아닙니다: {tmap_fallback}")
+            before_url = mobile.url
+            pages_before = len(ctx.pages)
+            tmap_chip.click()
+            mobile.wait_for_timeout(2200)
+            if mobile.url != before_url:
+                problems.append(f"앱 미설치 대체가 Midpoint 화면을 덮어썼습니다: {mobile.url}")
+            elif len(ctx.pages) == pages_before and not mobile.locator("#mapFallback").is_visible():
+                problems.append("앱이 열리지 않았는데 웹 지도도 안내도 없습니다")
+            # 팝업이 막히는 환경 — 인앱 안내가 버튼을 내놓고 화면은 그대로여야 한다
+            mobile.evaluate("() => { window.__probeOpen = window.open; window.open = () => null; }")
+            mobile.locator('.nav-chip:has-text("티맵")').first.click()
+            mobile.wait_for_timeout(1800)
+            if not mobile.locator("#mapFallback").is_visible():
+                problems.append("팝업이 막혔을 때 인앱 대체 안내가 뜨지 않습니다")
+            else:
+                fallback_href = mobile.locator("#mapFallbackOpen").get_attribute("href") or ""
+                if not fallback_href.startswith("https://map.kakao.com/link/by/car/"):
+                    problems.append(f"인앱 안내의 웹 지도 링크가 틀렸습니다: {fallback_href}")
+                mobile.click("#mapFallbackClose")
+                mobile.wait_for_timeout(300)
+                if mobile.locator("#mapFallback").is_visible():
+                    problems.append("인앱 대체 안내를 닫을 수 없습니다")
+            mobile.evaluate("() => { if (window.__probeOpen) window.open = window.__probeOpen; }")
+            if mobile.url != before_url:
+                problems.append("대체 경로 확인 뒤 Midpoint 화면을 잃었습니다")
         mobile.close()
+
+        # ---------- P1-01 · P2-05: Nominatim 0건 → Photon(lang=default) 대체 ----------
+        geo_requests: list[str] = []
+        photon_feature = {
+            "type": "FeatureCollection",
+            "features": [{
+                "type": "Feature",
+                "properties": {
+                    "name": "포톤 대체역", "street": "테스트로", "district": "테스트구",
+                    "city": "서울특별시", "state": "서울특별시",
+                },
+                "geometry": {"type": "Point", "coordinates": [127.1, 37.5]},
+            }],
+        }
+
+        def empty_route(route):
+            geo_requests.append(route.request.url)
+            route.fulfill(status=200, content_type="application/json", body="[]")
+
+        def photon_route(route):
+            geo_requests.append(route.request.url)
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps(photon_feature, ensure_ascii=False))
+
+        geo = browser.new_page(viewport=DESKTOP)
+        geo.route(re.compile(r"https://nominatim\.openstreetmap\.org/search.*"), empty_route)
+        geo.route(re.compile(r"https://photon\.komoot\.io/api/.*"), photon_route)
+        geo.goto(base, wait_until="load")
+        geo.wait_for_timeout(700)
+        geo.fill("#searchInput", "미드포인트테스트")
+        geo.press("#searchInput", "Enter")
+        try:
+            geo.wait_for_selector('#searchResults li.res-row:has-text("포톤 대체역")', timeout=12000)
+        except Exception:
+            problems.append("Nominatim 0건일 때 Photon 대체 결과가 나오지 않습니다")
+        else:
+            nominatim_calls = [url for url in geo_requests if "nominatim" in url]
+            photon_calls = [url for url in geo_requests if "photon" in url]
+            if not nominatim_calls:
+                problems.append("Nominatim 검색을 부르지 않았습니다")
+            if not photon_calls:
+                problems.append("0건 뒤 Photon 을 부르지 않았습니다")
+            elif "lang=ko" in photon_calls[0]:
+                problems.append(f"Photon 이 지원하지 않는 lang=ko 를 보냅니다: {photon_calls[0]}")
+            elif "lang=default" not in photon_calls[0]:
+                problems.append(f"Photon 언어가 default 가 아닙니다: {photon_calls[0]}")
+            if len(geo.locator('#searchResults li.res-row:has-text("포톤 대체역")').all()) > 1:
+                problems.append("같은 장소가 중복으로 표시됩니다")
+        geo.close()
 
         # ---------- 배포본에서만: 지도 핀 상호작용 ----------
         if args.base:

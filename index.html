@@ -48,7 +48,7 @@
   <script>try{var h=localStorage.getItem('hd2-theme');document.documentElement.setAttribute('data-theme',h==='dark'?'dark':'light');}catch(e){document.documentElement.setAttribute('data-theme','light');}</script>
   <link rel="stylesheet" href="./assets/hd2-theme.css?v=20261122-theme2" />
   <script src="./assets/hd2-theme.js?v=20261122-theme2" defer></script>
-  <link rel="stylesheet" href="style.css?v=20261122-theme2" />
+  <link rel="stylesheet" href="style.css?v=20261122-p1p2v2" />
 </head>
 <body>
   <svg class="sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
@@ -229,7 +229,13 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
+  <div class="map-fallback" id="mapFallback" role="status" aria-live="polite" hidden>
+    <span class="map-fallback-text" id="mapFallbackText"></span>
+    <a class="map-fallback-open" id="mapFallbackOpen" href="#" target="_blank" rel="noopener noreferrer">웹 지도에서 열기</a>
+    <button class="map-fallback-close" id="mapFallbackClose" type="button" aria-label="안내 닫기">✕</button>
+  </div>
+
   <script type="text/javascript" src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=86svi4m89b"></script>
-  <script type="module" src="app.js?v=20261122-theme2"></script>
+  <script type="module" src="app.js?v=20261122-p1p2v2"></script>
 </body>
 </html>

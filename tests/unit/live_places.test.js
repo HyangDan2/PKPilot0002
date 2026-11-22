@@ -5,6 +5,7 @@
    ================================================================== */
 
 import {
+  anchorCoordKey,
   buildOsmMapUrl,
   buildOverpassQuery,
   bboxFor,
@@ -533,4 +534,40 @@ test('loadLivePlaces: 좌표가 없으면 즉시 실패', async () => {
     error = err;
   }
   assert(error && error.name === 'LivePlacesError');
+});
+
+/* ------------------------------------------------------------------
+   P2-03 · 좌표 정밀도 — 화면(anchorKeyOf)과 캐시가 같은 6자리 키를 쓴다
+   예전 앱 쪽 키는 toFixed(3)(약 110m)이라 3자리 이내로 움직인 거점이
+   같은 곳으로 취급돼 재조회가 일어나지 않았다.
+   ------------------------------------------------------------------ */
+
+test('캐시 키: 좌표는 6자리, 반경은 1자리로 고정한다', () => {
+  assertEqual(anchorCoordKey(37.49791234, 127.02761234), '37.497912,127.027612');
+  assertEqual(liveCacheKey(37.49791234, 127.02761234, 2), '37.497912,127.027612@2.0');
+});
+
+test('캐시 키: 소수점 3자리 안쪽 이동(약 50m)도 다른 키가 된다', () => {
+  // 도보 50m 남쪽 이동 — 3자리 반올림이면 같은 키('37.498,127.028')로 뭉개지던 구간
+  const before = liveCacheKey(37.4979, 127.0276, 1);
+  const after = liveCacheKey(37.49835, 127.0276, 1);
+  assert(before !== after, `3자리 이내 이동을 같은 캐시 키로 봤다: ${before}`);
+  assertEqual(before, '37.497900,127.027600@1.0');
+  assertEqual(after, '37.498350,127.027600@1.0');
+  // 같은 좌표를 다시 계산하면 키가 같아야 한다 (불필요한 재조회 방지)
+  assertEqual(after, liveCacheKey(37.49835, 127.0276, 1));
+});
+
+test('캐시 키: 거점이 50m 움직이면 캐시를 재사용하지 않고 다시 조회한다', async () => {
+  clearLiveCache();
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls += 1;
+    return jsonResponse(overpassFixture());
+  };
+  await loadLivePlaces({ lat: 37.4979, lng: 127.0276, radiusKm: 1, fetchImpl, plan: planOf(['https://a.example/1']) });
+  assertEqual(calls, 1);
+  const moved = await loadLivePlaces({ lat: 37.49835, lng: 127.0276, radiusKm: 1, fetchImpl, plan: planOf(['https://a.example/1']) });
+  assertEqual(calls, 2, '50m 이동 뒤에도 예전 캐시를 썼다');
+  assertEqual(Boolean(moved.cached), false);
 });

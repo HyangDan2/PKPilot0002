@@ -6,10 +6,14 @@
    ================================================================== */
 
 import {
+  GEOCODE_CACHE_TTL_MS,
+  PHOTON_LANG,
   createGeocoder,
   createRateLimiter,
   describeNominatimAddress,
   describePhotonAddress,
+  mergeSearchRows,
+  proxyEndpoints,
 } from '../../js/geocode.js';
 import { assert, assertEqual, test } from './harness.js';
 
@@ -212,4 +216,153 @@ test('레이트 리미터: 실패해도 다음 작업이 막히지 않는다', a
   assert(error);
   await sleep(15);
   assertEqual(await schedule(async () => 'ok'), 'ok');
+});
+
+/* ------------------------------------------------------------------
+   P1-01 · Photon 언어
+   Photon 은 default · de · en · fr 만 받는다. lang=ko 는 HTTP 400 이라
+   대체 검색이 통째로 죽어 있었다 — 실제 요청 URL 로 고정한다.
+   ------------------------------------------------------------------ */
+
+test('Photon: lang=ko 가 아니라 lang=default 로 요청한다', async () => {
+  assertEqual(PHOTON_LANG, 'default');
+  assertEqual(GEOCODE_CACHE_TTL_MS, 30 * 60 * 1000, '메모리 캐시 TTL 을 30분으로 늘리지 않았다');
+  const fetchImpl = fetchStub([
+    ['nominatim.openstreetmap.org/search', () => ({ ok: false, status: 503, json: async () => ({}) })],
+    ['photon.komoot.io/api', () => json(PHOTON_SEARCH)],
+  ]);
+  const geocoder = createGeocoder({ fetchImpl, minIntervalMs: 0, retries: 0 });
+  await geocoder.search('강남역');
+  const photonCall = fetchImpl.calls.find(call => call.url.includes('photon.komoot.io/api'));
+  assert(photonCall, 'Photon 대체 검색을 부르지 않았다');
+  assert(photonCall.url.includes('lang=default'), `Photon 언어가 default 가 아니다: ${photonCall.url}`);
+  assert(!photonCall.url.includes('lang=ko'), `지원하지 않는 lang=ko 가 남아 있다: ${photonCall.url}`);
+});
+
+test('Photon 역주소도 lang=default 로 요청한다', async () => {
+  const fetchImpl = fetchStub([
+    ['nominatim.openstreetmap.org/reverse', () => ({ ok: false, status: 500, json: async () => ({}) })],
+    ['photon.komoot.io/reverse', () => json(PHOTON_REVERSE)],
+  ]);
+  const geocoder = createGeocoder({ fetchImpl, minIntervalMs: 0, retries: 0 });
+  await geocoder.reverse({ lat: 37.4979, lng: 127.0276 });
+  const call = fetchImpl.calls.find(item => item.url.includes('photon.komoot.io/reverse'));
+  assert(call, 'Photon 역주소를 부르지 않았다');
+  assert(call.url.includes('lang=default'), `Photon 역주소 언어가 default 가 아니다: ${call.url}`);
+});
+
+/* ------------------------------------------------------------------
+   P2-05 · Nominatim 이 0건이어도 Photon 을 시도하고 결과를 합친다
+   ------------------------------------------------------------------ */
+
+test('검색: Nominatim 200 + [] 이면 Photon 도 묻는다', async () => {
+  const fetchImpl = fetchStub([
+    ['nominatim.openstreetmap.org/search', () => json([])],
+    ['photon.komoot.io/api', () => json(PHOTON_SEARCH)],
+  ]);
+  const geocoder = createGeocoder({ fetchImpl, minIntervalMs: 0 });
+  const rows = await geocoder.search('강남역');
+  assertEqual(rows.length, 1, '빈 결과 뒤 Photon 결과를 쓰지 않았다');
+  assertEqual(rows[0].source, 'photon');
+  assertEqual(geocoder.stats.emptyFallbacks, 1);
+});
+
+test('검색: 두 제공자 결과를 좌표·이름으로 중복 제거해 합친다', () => {
+  const nominatim = [
+    { name: '강남역', address: '서울 강남구', lat: 37.4979, lng: 127.0276, source: 'nominatim' },
+    { name: '역삼역', address: '서울 강남구', lat: 37.5006, lng: 127.0364, source: 'nominatim' },
+  ];
+  const photon = [
+    { name: '강남역', address: '서울 강남구 강남대로', lat: 37.49792, lng: 127.02761, source: 'photon' },
+    { name: '선릉역', address: '서울 강남구', lat: 37.5045, lng: 127.0490, source: 'photon' },
+    { name: '강남역', address: '부산 강남역(동명)', lat: 35.1000, lng: 129.0000, source: 'photon' },
+  ];
+  const merged = mergeSearchRows(nominatim, photon);
+  assertEqual(merged.length, 4, `중복 제거 결과가 다르다: ${merged.map(r => r.name).join(',')}`);
+  assertEqual(merged[0].source, 'nominatim', '주 제공자 순서를 지키지 않았다');
+  assertEqual(merged[3].lng, 129.0, '멀리 있는 동명 장소를 지워 버렸다');
+});
+
+test('검색: fallbackOnEmpty=false 면 0건일 때 Photon 을 부르지 않는다', async () => {
+  const fetchImpl = fetchStub([['nominatim.openstreetmap.org/search', () => json([])]]);
+  const geocoder = createGeocoder({ fetchImpl, minIntervalMs: 0, fallbackOnEmpty: false });
+  const rows = await geocoder.search('없는곳');
+  assertEqual(rows.length, 0);
+  assertEqual(fetchImpl.calls.length, 1);
+  assertEqual(geocoder.stats.emptyFallbacks, 0);
+});
+
+test('검색: 0건은 짧게만 기억하고 결과가 있으면 길게 기억한다', async () => {
+  let now = 1_000_000;
+  let nominatimRows = [];
+  const fetchImpl = fetchStub([
+    ['nominatim.openstreetmap.org/search', () => json(nominatimRows)],
+    ['photon.komoot.io/api', () => json({ features: [] })],
+  ]);
+  const geocoder = createGeocoder({
+    fetchImpl, minIntervalMs: 0, cacheTtlMs: 60_000, emptyTtlMs: 1_000, now: () => now,
+  });
+  await geocoder.search('사라진곳');
+  const afterEmpty = fetchImpl.calls.length;
+  now += 2_000;
+  nominatimRows = NOMINATIM_SEARCH;
+  await geocoder.search('사라진곳');
+  assertEqual(fetchImpl.calls.length, afterEmpty + 1, '빈 결과를 너무 오래 캐시했다');
+  const afterHit = fetchImpl.calls.length;
+  now += 30_000;
+  await geocoder.search('사라진곳');
+  assertEqual(fetchImpl.calls.length, afterHit, '결과가 있는 질의를 다시 요청했다');
+});
+
+/* ------------------------------------------------------------------
+   P1-02 · 요청량 절감 — 동시 중복 요청 병합
+   ------------------------------------------------------------------ */
+
+test('검색: 같은 질의가 동시에 오면 요청 하나를 함께 쓴다', async () => {
+  let resolveSearch;
+  const calls = [];
+  const fetchImpl = async url => {
+    calls.push(url);
+    return new Promise(resolve => { resolveSearch = () => resolve(json(NOMINATIM_SEARCH)); });
+  };
+  const geocoder = createGeocoder({ fetchImpl, minIntervalMs: 0 });
+  const first = geocoder.search('강남역');
+  const second = geocoder.search('강남역');
+  await sleep(5);
+  resolveSearch();
+  const [a, b] = await Promise.all([first, second]);
+  assertEqual(calls.length, 1, `동시 질의가 ${calls.length}번 나갔다`);
+  assertEqual(geocoder.stats.coalesced, 1);
+  assertEqual(a, b, '병합된 요청이 같은 결과를 주지 않았다');
+});
+
+/* ------------------------------------------------------------------
+   P1-02 · 서버 프록시 주입 훅
+   ------------------------------------------------------------------ */
+
+test('프록시: proxyEndpoints 규약과 createGeocoder({ proxyUrl }) 주입', async () => {
+  const endpoints = proxyEndpoints('https://hq.example/midpoint/geo/');
+  assertEqual(endpoints[0].search, 'https://hq.example/midpoint/geo/nominatim/search');
+  assertEqual(endpoints[0].reverse, 'https://hq.example/midpoint/geo/nominatim/reverse');
+  assertEqual(endpoints[1].search, 'https://hq.example/midpoint/geo/photon/api');
+  assertEqual(proxyEndpoints('')[0].search, 'https://nominatim.openstreetmap.org/search');
+
+  const fetchImpl = fetchStub([['hq.example', () => json(NOMINATIM_SEARCH)]]);
+  const geocoder = createGeocoder({ fetchImpl, proxyUrl: 'https://hq.example/midpoint/geo', minIntervalMs: 0 });
+  await geocoder.search('강남역');
+  assert(fetchImpl.calls[0].url.startsWith('https://hq.example/midpoint/geo/nominatim/search?'),
+    `프록시를 쓰지 않았다: ${fetchImpl.calls[0].url}`);
+});
+
+test('프록시: 전역 HD2_GEOCODE_PROXY 만 채워도 프록시로 붙는다', async () => {
+  const fetchImpl = fetchStub([['midpoint.test', () => json(NOMINATIM_SEARCH)]]);
+  globalThis.HD2_GEOCODE_PROXY = 'https://midpoint.test/geo';
+  try {
+    const geocoder = createGeocoder({ fetchImpl, minIntervalMs: 0 });
+    await geocoder.search('강남역');
+    assert(fetchImpl.calls[0].url.startsWith('https://midpoint.test/geo/nominatim/search?'),
+      `전역 프록시를 쓰지 않았다: ${fetchImpl.calls[0].url}`);
+  } finally {
+    delete globalThis.HD2_GEOCODE_PROXY;
+  }
 });

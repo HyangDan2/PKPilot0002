@@ -31,26 +31,30 @@ import {
   travelModeOf,
   walkMinutesForMeters,
   walkingMinutes,
-} from './js/core.js?v=20261122-wo11';
+} from './js/core.js?v=20261122-p1p2v2';
 import {
   LIVE_RADIUS_KM,
   MAX_LIVE_RADIUS_KM,
+  anchorCoordKey,
+  liveCacheKey,
   loadLivePlaces,
   needsLiveSearch,
-} from './js/live_places.js?v=20261122-wo11';
+} from './js/live_places.js?v=20261122-p1p2v2';
 import { LINES, STATIONS } from './js/stations.js';
 import { DRIVING_SPOTS, ROADS } from './js/driving_spots.js';
 import { LANDMARKS } from './js/landmarks.js';
 import { HUBS, PLACES } from './js/places.js';
 import {
   PROVIDERS,
+  appFallbackWebUrl,
+  isAppSchemeUrl,
   isMobileDevice,
   kakaoWalkRouteUrl,
   naverDirectionsUrl,
   placeSearchUrl,
   providerList,
-} from './js/directions.js?v=20261122-wo11';
-import { geocoder } from './js/geocode.js?v=20261122-wo11';
+} from './js/directions.js?v=20261122-p1p2v2';
+import { geocoder } from './js/geocode.js?v=20261122-p1p2v2';
 
 /* ------------------------------------------------------------------
    상수
@@ -146,6 +150,10 @@ const el = {
   portalMenuDropdown: document.getElementById('portalMenuDropdown'),
   mapHint: document.getElementById('mapHint'),
   toast: document.getElementById('toast'),
+  fallback: document.getElementById('mapFallback'),
+  fallbackText: document.getElementById('mapFallbackText'),
+  fallbackOpen: document.getElementById('mapFallbackOpen'),
+  fallbackClose: document.getElementById('mapFallbackClose'),
 };
 
 let map = null;
@@ -872,8 +880,8 @@ const liveRuntime = {
   token: 0,
 };
 
-const anchorKeyOf = anchor => (anchor ? `${anchor.lat.toFixed(3)},${anchor.lng.toFixed(3)}` : '');
-const liveKeyFor = anchor => `${anchorKeyOf(anchor)}@${state.liveRadiusKm}`;
+const anchorKeyOf = anchor => (anchor ? anchorCoordKey(anchor.lat, anchor.lng) : '');
+const liveKeyFor = anchor => (anchor ? liveCacheKey(anchor.lat, anchor.lng, state.liveRadiusKm) : '');
 
 /** 지금 손에 있는 재료(내장 POI + 실시간 POI)로 목록·코스를 만든다. */
 function buildNearby(anchor) {
@@ -1105,11 +1113,13 @@ function directionLinks(spot) {
       // 티맵처럼 앱 스킴만 있는 제공자는 PC에서 보여주지 않는다 (길이 죽은 버튼이 된다)
       if (provider.appOnly && !isMobileDevice()) return '';
       const url = provider.app({ from: point, to: spot, travelMode });
-      const webUrl = provider.web ? provider.web({ from: point, to: spot, travelMode }) : '';
-      const fallback = provider.appScheme && url.startsWith(provider.appScheme) && webUrl
-        ? ` data-app-fallback="${esc(webUrl)}"`
-        : '';
       const label = travelMode === 'car' ? provider.carLabel : provider.label;
+      // 앱 스킴 링크에는 웹 대체 경로를 늘 붙인다. 티맵처럼 웹 길찾기가 없는
+      // 제공자는 카카오맵 자동차 경로로 넘겨 길을 잃지 않게 한다.
+      const webUrl = appFallbackWebUrl(key, { from: point, to: spot, travelMode });
+      const fallback = isAppSchemeUrl(key, url) && webUrl
+        ? ` data-app-fallback="${esc(webUrl)}" data-app-fallback-label="${esc(label)}"`
+        : '';
       return `<a class="nav-chip" href="${esc(url)}"${fallback} target="_blank" rel="noopener noreferrer" title="${esc(point.name)} → ${esc(spot.name)} ${esc(label)} 길찾기">${esc(label)}</a>`;
     }).join('');
     return `
@@ -2396,23 +2406,64 @@ function loadPoints(points, mode, notify = true, travelMode = null, carAnchor = 
 }
 
 /* ------------------------------------------------------------------
-   앱 딥링크 대체 경로 — 카카오맵·티맵 앱이 없으면 웹 지도로 넘긴다.
+   앱 딥링크 대체 경로 — 앱이 없으면 새 탭으로 웹 지도를 열고 Midpoint 화면은 그대로 둔다.
+   (예전에는 window.location.href 로 탭 자체를 덮어써서 앱이 없으면 작업 화면을 잃었다)
    앱이 열리면 문서가 숨겨지므로, 1.3초 동안 그대로면 설치되지 않은 것으로 본다.
    ------------------------------------------------------------------ */
+function openMapFallback(url) {
+  try {
+    // noopener 를 옵션으로 주면 브라우저가 항상 null 을 돌려줘 성공/차단을 구분할 수 없다.
+    // 먼저 창을 열어 확인한 뒤 opener 를 끊어 같은 보호를 얻는다.
+    const win = window.open(url, '_blank');
+    if (!win) return null;
+    try { win.opener = null; } catch { /* 이미 끊겼으면 그대로 둔다 */ }
+    return win;
+  } catch {
+    return null;
+  }
+}
+
+let fallbackHideTimer = null;
+
+/** 팝업이 막혔을 때 인앱 대체 안내 — 버튼을 누를 때는 사용자 제스처라 새 탭이 열린다. */
+function showAppFallback(url, label) {
+  if (!el.fallback) {
+    openMapFallback(url);
+    return;
+  }
+  el.fallbackText.textContent = `${label} 앱이 열리지 않아요. 웹 지도에서 같은 길찾기를 열 수 있습니다.`;
+  el.fallbackOpen.href = url;
+  el.fallback.hidden = false;
+  clearTimeout(fallbackHideTimer);
+  fallbackHideTimer = setTimeout(hideAppFallback, 12000);
+}
+
+function hideAppFallback() {
+  clearTimeout(fallbackHideTimer);
+  if (el.fallback) el.fallback.hidden = true;
+}
+
 function initAppLinkFallback() {
+  if (el.fallbackClose) el.fallbackClose.addEventListener('click', hideAppFallback);
   document.addEventListener('click', event => {
     const link = event.target.closest?.('a[data-app-fallback]');
     if (!link) return;
     const fallback = link.getAttribute('data-app-fallback');
     if (!fallback) return;
+    const label = link.getAttribute('data-app-fallback-label') || '지도';
     let left = document.hidden;
-    const onHide = () => { left = true; };
+    const onHide = () => { if (document.hidden) left = true; };
     document.addEventListener('visibilitychange', onHide);
     window.setTimeout(() => {
       document.removeEventListener('visibilitychange', onHide);
       if (left || document.hidden) return;
-      // 앱이 설치되지 않았거나 스킴이 막힌 환경 — 같은 길찾기를 웹으로 연다
-      window.location.href = fallback;
+      // 앱이 설치되지 않았거나 스킴이 막힌 환경 — 현재 화면은 보존하고 새 탭으로 연다
+      const win = openMapFallback(fallback);
+      if (win) {
+        toast(`${label} 앱이 열리지 않아 웹 지도로 열었어요`);
+      } else {
+        showAppFallback(fallback, label);
+      }
     }, 1300);
   });
 }
