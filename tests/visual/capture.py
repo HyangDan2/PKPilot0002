@@ -444,8 +444,9 @@ def main() -> int:
         car_naver = page.locator(".nav-chip").nth(1).get_attribute("href")
         if not car_naver or not car_naver.endswith("/car"):
             problems.append(f"자차 모드 네이버 길찾기가 /car가 아닙니다: {car_naver}")
-        if page.locator(".nav-chip").count() < 3 * 3:
-            problems.append("자차 모드에서 티맵 버튼이 추가되지 않습니다")
+        # PC 에서는 앱 전용(티맵) 버튼을 숨긴다 — 참가자×2(카카오내비·네이버지도)
+        if page.locator(".nav-chip").count() < 3 * 2:
+            problems.append("자차 모드 길찾기 버튼이 모자랍니다")
         scroll_panel(page)
         if shots:
             shot(page, "desktop-car-result")
