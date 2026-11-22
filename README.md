@@ -199,6 +199,18 @@ PKPilot0002/
   bakeries only, with a session memory cache (`Map`) to avoid repeat requests. It applies the same
   classification and clean-up rules as the snapshot
 - KTX/SRT stations, bus terminals and large parking hubs: `tools/data/*.json` (checked by hand)
+- Address search and reverse geocoding: Nominatim first, Photon as the fallback. Both share **one client-side
+  queue** (≈1.1 s between requests), a 30-minute memory cache, in-flight de-duplication (queries and reverse
+  calls) and a 7-day `localStorage` address store. A 429 puts Nominatim into a **cooldown** (1 minute,
+  doubling to 10 minutes, `Retry-After` honoured) during which Photon answers and the primary is probed
+  again afterwards. Photon is always asked with `lang=default` — it rejects `ko` with HTTP 400 — for search
+  *and* reverse.
+
+  There is no shared backend behind a static site. To move the traffic off the public instances, point the
+  app at a proxy before it loads — `globalThis.HD2_GEOCODE_PROXY = 'https://<host>/midpoint/geo'` (or
+  `createGeocoder({ proxyUrl })` in code). The route contract is `…/nominatim/search`,
+  `…/nominatim/reverse`, `…/photon/api`, `…/photon/reverse`; the client queue, cache and cooldown keep
+  working unchanged.
 
 ```sh
 python3 tools/build_network.py            # reuse cache
@@ -227,7 +239,7 @@ It uses ES modules, so opening `file://` will not work; a static server is requi
 
 ```sh
 npm test                              # unit + interaction checks (same as the CI workflow)
-npm run test:unit                     # python3 tests/run_tests.py — 191 unit tests
+npm run test:unit                     # python3 tests/run_tests.py — 199 unit tests
 npm run test:e2e                      # python3 tests/e2e/app_checks.py — local server
 npm run test:e2e:live                 # same checks against the deployment
 python3 tests/visual/capture.py --check   # Chromium screen checks
@@ -243,20 +255,28 @@ python3 tools/generate_brand_assets.py             # regenerate favicons and the
   duplicates, total), search and walking deep links, POI data integrity (800 m radius, coordinates, links)**,
   **live POI parsing (category, name clean-up, distance, walking time, parking, de-duplication, cap), Overpass
   query and bbox, built-in + live merge, course built from live POIs only, mirror fallback, timeout and
-  session cache**, **geocoding adapter (shared rate limiter, cache TTL, timeout, 429 retry, Photon
-  `lang=default` fallback, merge on zero Nominatim results, in-flight de-duplication, proxy injection)**,
-  **live POI cache key precision (6 decimals, 50 m moves re-query), direction fallbacks for app-only
-  providers (Tmap → Kakao car web route)**
+  session cache**, **geocoding adapter (shared rate limiter, cache TTL, timeout, 429 retry, 429 cooldown that
+  switches to Photon for 1–10 min, `Retry-After` handling, Photon `lang=default` for search *and* reverse,
+  merge on zero Nominatim results, reverse-geocode `no_result` vs failure, in-flight de-duplication for
+  queries and reverse calls, proxy injection)**, **coordinate key precision (one 6-decimal key shared by the
+  geocoder, the address store and the live POI cache), direction fallbacks for app-only providers
+  (Tmap → Kakao car web route)**
 - Interaction checks (`tests/e2e/app_checks.py`): duplicate-origin participants, name input focus during async
   renders, car-anchor share round trip, Kakao deep-link rules, **app-uninstalled fallback that preserves the
-  Midpoint screen (new tab or in-app bar), Tmap → Kakao car fallback**, two fairness baselines, zoom allowed,
-  **Nominatim 0-result → Photon `lang=default` rows**, pin taps after a place focus (deployed build)
+  Midpoint screen (new tab or in-app bar) and stays quiet when the app really opens (blur/pagehide), Tmap →
+  Kakao car fallback**, two fairness baselines, zoom allowed, **Nominatim 0-result → Photon `lang=default`
+  rows, Nominatim reverse failure → Photon reverse with `lang=default`, live “0 places” vs “lookup failed”
+  shown differently**, pin taps after a place focus (deployed build)
 - Screen checks: map tile load, pin and marker counts, result card, URL state, share-link round trip, mode
   switch, delete/clear, mobile sheet collapse and expand,
   **Gangnam, Hongdae, Seomyeon and Gimhae course cards and tab switching, map ①/② markers and polyline,
   live in-app discovery at non-hub hubs (Isu, Uijeongbu, Cheonan, Gumi) with no external links exposed,
   skeleton → widen to 2 km → retry on empty and failed mock responses, mobile horizontal overflow**
 - Uses Playwright (Chromium) only, no Node.js. `pip install playwright && playwright install chromium`.
+- CI: the workflow definition lives in [`docs/ci-workflow.yml`](docs/ci-workflow.yml) because the GitHub App
+  installation used here has no *Workflows* permission (the rejected push is recorded in that file). Run the
+  same two commands (`npm run test:unit`, `npm run test:e2e`) locally until it can be added under
+  `.github/workflows/`.
 - NAVER Maps only renders on a domain registered in the NCP console. Locally (`http://127.0.0.1`) the map is
   blocked with 401, so screen checks run against the deployment:
   `python3 tests/visual/capture.py --base https://hyangdan2.github.io/PKPilot0002/`
@@ -281,7 +301,8 @@ python3 tools/generate_brand_assets.py             # regenerate favicons and the
 ## Limits
 
 - A network connection is needed for the map and addresses. There is no offline cache.
-- The public Nominatim instance is called at roughly one request per second. Heavy use needs its own proxy.
+- The public Nominatim instance is called at roughly one request per second by one browser. A 429 switches
+  to Photon for a cooldown, but many users at once still need a shared proxy (see *Data sources and refresh*).
 - Distances are great-circle, and walking time is an estimate at 4.5 km/h. Real routes and travel times are
   not modelled.
 - Station ranking is nearest-coordinate based, so exits and transfer walks are not considered.

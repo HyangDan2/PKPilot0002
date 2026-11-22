@@ -1,0 +1,97 @@
+# GitHub Actions CI 정의 — 실행본 보관용 사본
+
+이 파일은 `.github/workflows/ci.yml` 로 올려야 하는 워크플로 정의를 저장소 안에
+남겨 두기 위한 사본입니다. `docs/` 아래에 있어 Actions 가 실행하지는 않습니다.
+
+## 왜 `.github/workflows/` 에 두지 못했나
+
+Pickle 의 GitHub App 설치에 **Workflows 권한이 없어**, `.github/workflows/` 파일이
+포함된 push 는 GitHub 가 거절합니다(아래 재현 기록 참고). 소스·테스트를 고칠 때마다
+이 파일도 같이 최신으로 맞춰 두고, GitHub App 설치 권한에 Workflows 를 추가하거나
+사용자가 웹 편집기로 한 번 올리면 그대로 복사해 쓰면 됩니다.
+
+```sh
+mkdir -p .github/workflows
+cp docs/ci-workflow.yml .github/workflows/ci.yml
+git add .github/workflows/ci.yml && git commit -m "ci: GitHub Actions 워크플로 추가" && git push
+```
+
+## 재현 기록 (2026-11-22, 커밋 eff6d13 / 브랜치 ci/workflow-probe)
+
+```
+$ git push -u origin ci/workflow-probe
+To https://github.com/HyangDan2/PKPilot0002.git
+ ! [remote rejected] ci/workflow-probe -> ci/workflow-probe (refusing to allow a GitHub App
+   to create or update workflow `.github/workflows/ci.yml` without `workflows` permission)
+error: failed to push some refs to 'https://github.com/HyangDan2/PKPilot0002.git'
+```
+
+워크플로 파일만 들어 있는 브랜치라 다른 변경은 올라가지 않았고, 실패한 push 는
+원격에 아무것도 남기지 않았습니다(브랜치는 로컬에서 삭제).
+
+## 현재 대체 검증
+
+워크플로를 올리지 못하는 동안에도 같은 두 명령을 로컬에서 그대로 돌려 증빙합니다.
+
+| 워크플로 단계 | 로컬 명령 | 최근 결과 |
+| --- | --- | --- |
+| Unit tests | `npm run test:unit` | 199개 통과 / 0개 실패 |
+| Interaction E2E | `npm run test:e2e` | 모든 상호작용 검사 통과 |
+
+---
+
+```yaml
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Playwright (Chromium)
+        run: |
+          python -m pip install --upgrade pip
+          pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Unit tests (core · places · live_places · directions · geocode)
+        run: npm run test:unit --silent
+
+  e2e:
+    name: Interaction E2E
+    runs-on: ubuntu-latest
+    needs: unit
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Playwright (Chromium)
+        run: |
+          python -m pip install --upgrade pip
+          pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Interaction checks (local static server)
+        run: npm run test:e2e --silent
+```

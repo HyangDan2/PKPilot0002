@@ -31,7 +31,7 @@ import {
   travelModeOf,
   walkMinutesForMeters,
   walkingMinutes,
-} from './js/core.js?v=20261122-p1p2v2';
+} from './js/core.js?v=20261122-p1p2v3';
 import {
   LIVE_RADIUS_KM,
   MAX_LIVE_RADIUS_KM,
@@ -39,7 +39,7 @@ import {
   liveCacheKey,
   loadLivePlaces,
   needsLiveSearch,
-} from './js/live_places.js?v=20261122-p1p2v2';
+} from './js/live_places.js?v=20261122-p1p2v3';
 import { LINES, STATIONS } from './js/stations.js';
 import { DRIVING_SPOTS, ROADS } from './js/driving_spots.js';
 import { LANDMARKS } from './js/landmarks.js';
@@ -53,8 +53,8 @@ import {
   naverDirectionsUrl,
   placeSearchUrl,
   providerList,
-} from './js/directions.js?v=20261122-p1p2v2';
-import { geocoder } from './js/geocode.js?v=20261122-p1p2v2';
+} from './js/directions.js?v=20261122-p1p2v3';
+import { coordKey, geocoder } from './js/geocode.js?v=20261122-p1p2v3';
 
 /* ------------------------------------------------------------------
    상수
@@ -612,7 +612,8 @@ function saveGeoStore() {
 }
 
 function requestAddress(point) {
-  const key = `${point.lat.toFixed(4)},${point.lng.toFixed(4)}`;
+  // 주소 저장소·지오코더 캐시·실시간 POI 캐시가 같은 자릿수(6)를 쓰도록 한 함수를 거친다.
+  const key = coordKey(point.lat, point.lng);
   const stored = addressStore.get(key);
   if (stored && stored.text) {
     // 이전 방문에서 받아 둔 주소 — 네트워크 없이 바로 채운다
@@ -801,6 +802,7 @@ async function runSearch(term) {
     const code = error?.code || '';
     let message = '검색에 실패했어요. 잠시 후 다시 시도해 주세요.';
     if (code === 'timeout') message = '검색이 너무 오래 걸렸어요 — 잠시 뒤 다시 시도하거나 지도에서 직접 찍어 주세요.';
+    else if (code === 'rate_limited') message = '주소 서버가 요청을 잠시 막았어요 — 조금 뒤 다시 시도하거나 지도에서 직접 찍어 주세요.';
     else if (code === 'search_unavailable') message = '검색 서버가 지금 붐비네요 — 지도에서 직접 찍거나 잠시 뒤 다시 시도해 주세요.';
     renderSearchRows([], { empty: message });
   } finally {
@@ -2424,6 +2426,10 @@ function openMapFallback(url) {
 }
 
 let fallbackHideTimer = null;
+let appLinkTimer = null;
+let appLinkCleanup = null;
+/** 앱 스킴을 누른 뒤 "앱이 열렸는지" 기다리는 시간 */
+const APP_LINK_GRACE_MS = 1300;
 
 /** 팝업이 막혔을 때 인앱 대체 안내 — 버튼을 누를 때는 사용자 제스처라 새 탭이 열린다. */
 function showAppFallback(url, label) {
@@ -2443,28 +2449,62 @@ function hideAppFallback() {
   if (el.fallback) el.fallback.hidden = true;
 }
 
+/** 진행 중인 앱 스킴 시도 정리 — 타이머와 감지기를 한 번에 걷어낸다. */
+function clearAppLinkAttempt() {
+  if (appLinkTimer) clearTimeout(appLinkTimer);
+  appLinkTimer = null;
+  if (appLinkCleanup) appLinkCleanup();
+  appLinkCleanup = null;
+}
+
+/**
+ * 앱 스킴 링크를 누른 직후의 감시 — 앱이 열렸다면 문서가 숨거나 blur/pagehide 가 온다.
+ * 아이폰 사파리는 스킴이 실패해도 화면을 그대로 두면서 "열 수 없음"만 띄우므로,
+ * 어느 신호도 없을 때만 "미설치"로 보고 웹 길찾기를 새 탭으로 내보낸다.
+ */
+function beginAppLinkAttempt(fallback, label) {
+  clearAppLinkAttempt();
+  hideAppFallback();
+  let left = document.hidden;
+  const onVisibility = () => { if (document.hidden) left = true; };
+  const onLeave = () => { left = true; };
+  document.addEventListener('visibilitychange', onVisibility);
+  // 구형 아이오에스 사파리 — 표준 이벤트도 함께 건다 (중복 호출은 무해)
+  document.addEventListener('webkitvisibilitychange', onVisibility);
+  window.addEventListener('pagehide', onLeave);
+  window.addEventListener('beforeunload', onLeave);
+  window.addEventListener('blur', onLeave);
+  appLinkCleanup = () => {
+    document.removeEventListener('visibilitychange', onVisibility);
+    document.removeEventListener('webkitvisibilitychange', onVisibility);
+    window.removeEventListener('pagehide', onLeave);
+    window.removeEventListener('beforeunload', onLeave);
+    window.removeEventListener('blur', onLeave);
+  };
+  appLinkTimer = window.setTimeout(() => {
+    clearAppLinkAttempt();
+    if (left || document.hidden) return;
+    // 앱이 설치되지 않았거나 스킴이 막힌 환경 — 현재 화면은 보존하고 새 탭으로 연다
+    const win = openMapFallback(fallback);
+    if (win) {
+      toast(`${label} 앱이 열리지 않아 웹 지도로 열었어요`);
+    } else {
+      showAppFallback(fallback, label);
+    }
+  }, APP_LINK_GRACE_MS);
+}
+
 function initAppLinkFallback() {
   if (el.fallbackClose) el.fallbackClose.addEventListener('click', hideAppFallback);
+  // 안내에서 웹 지도를 열면 안내는 접는다
+  if (el.fallbackOpen) el.fallbackOpen.addEventListener('click', hideAppFallback);
   document.addEventListener('click', event => {
     const link = event.target.closest?.('a[data-app-fallback]');
     if (!link) return;
     const fallback = link.getAttribute('data-app-fallback');
     if (!fallback) return;
     const label = link.getAttribute('data-app-fallback-label') || '지도';
-    let left = document.hidden;
-    const onHide = () => { if (document.hidden) left = true; };
-    document.addEventListener('visibilitychange', onHide);
-    window.setTimeout(() => {
-      document.removeEventListener('visibilitychange', onHide);
-      if (left || document.hidden) return;
-      // 앱이 설치되지 않았거나 스킴이 막힌 환경 — 현재 화면은 보존하고 새 탭으로 연다
-      const win = openMapFallback(fallback);
-      if (win) {
-        toast(`${label} 앱이 열리지 않아 웹 지도로 열었어요`);
-      } else {
-        showAppFallback(fallback, label);
-      }
-    }, 1300);
+    beginAppLinkAttempt(fallback, label);
   });
 }
 

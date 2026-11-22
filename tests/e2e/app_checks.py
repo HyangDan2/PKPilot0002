@@ -212,10 +212,14 @@ def main() -> int:
 
         def on_pageerror(exc):
             text = str(exc)
+            stack = getattr(exc, "stack", "") or ""
             # 로컬(localhost)은 네이버 지도 키의 허용 도메인이 아니라 인증이 401 로 떨어지고,
-            # 그 실패 콜백이 SDK 내부에서 가끔 NullReference 를 던진다 — 앱 오류가 아니다.
+            # 그 실패 콜백이 SDK 내부에서 TypeError(forEach/isArray of null)를 던진다 — 앱 오류가 아니다.
+            # 페이지 오류의 메시지에는 호스트가 없고 스택에만 있어 스택까지 확인한다.
             # (허용 도메인인 배포본에서는 나지 않는다)
             if "oapi.map.naver.com" in text:
+                return
+            if "oapi.map.naver.com" in stack and base not in stack:
                 return
             console_errors.append(text)
 
@@ -394,6 +398,17 @@ def main() -> int:
             mobile.evaluate("() => { if (window.__probeOpen) window.open = window.__probeOpen; }")
             if mobile.url != before_url:
                 problems.append("대체 경로 확인 뒤 Midpoint 화면을 잃었습니다")
+            # 앱이 실제로 열린 경우(문서 blur/pagehide)는 미설치로 단정하지 않는다
+            pages_before = len(ctx.pages)
+            mobile.locator('.nav-chip:has-text("티맵")').first.click()
+            mobile.evaluate("() => window.dispatchEvent(new Event('blur'))")
+            mobile.wait_for_timeout(1900)
+            if mobile.locator("#mapFallback").is_visible():
+                problems.append("앱이 열린 경우에도 미설치 안내를 띄웁니다")
+            if len(ctx.pages) != pages_before:
+                problems.append("앱이 열린 경우에도 웹 지도를 새 탭으로 열었습니다")
+            if mobile.url != before_url:
+                problems.append("앱 스킴 시도 뒤 Midpoint 화면을 잃었습니다")
         mobile.close()
 
         # ---------- P1-01 · P2-05: Nominatim 0건 → Photon(lang=default) 대체 ----------
@@ -444,6 +459,105 @@ def main() -> int:
             if len(geo.locator('#searchResults li.res-row:has-text("포톤 대체역")').all()) > 1:
                 problems.append("같은 장소가 중복으로 표시됩니다")
         geo.close()
+
+        # ---------- P1-01: 역주소(reverse)도 Photon 대체 · lang=default ----------
+        reverse_calls: list[str] = []
+        photon_reverse = {
+            "type": "FeatureCollection",
+            "features": [{
+                "type": "Feature",
+                "properties": {"name": "포톤역", "street": "테스트로", "district": "테스트구",
+                               "city": "서울특별시", "state": "서울특별시"},
+                "geometry": {"type": "Point", "coordinates": [127.1, 37.5]},
+            }],
+        }
+
+        def nominatim_reverse_500(route):
+            reverse_calls.append(route.request.url)
+            route.fulfill(status=500, content_type="application/json", body="{}")
+
+        def photon_reverse_ok(route):
+            reverse_calls.append(route.request.url)
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps(photon_reverse, ensure_ascii=False))
+
+        rev = browser.new_page(viewport=DESKTOP)
+        rev.route(re.compile(r"https://nominatim\.openstreetmap\.org/reverse.*"), nominatim_reverse_500)
+        rev.route(re.compile(r"https://photon\.komoot\.io/reverse.*"), photon_reverse_ok)
+        # 공유 링크로 두 참가자를 불러오면 좌표마다 역주소를 묻는다
+        rev.goto(f"{base}?p=37.4979,127.0276|37.5012,127.0310&n=%EA%B0%80~%EB%82%98", wait_until="load")
+        try:
+            rev.wait_for_function(
+                "() => Array.from(document.querySelectorAll('.p-addr'))"
+                ".some(node => node.textContent.includes('테스트로'))",
+                timeout=15000,
+            )
+        except Exception:
+            problems.append("Nominatim 역주소 실패 시 Photon 역주소로 주소를 채우지 못합니다")
+        else:
+            photon_reverse_calls = [url for url in reverse_calls if "photon" in url]
+            if not photon_reverse_calls:
+                problems.append("역주소 대체로 Photon 을 부르지 않았습니다")
+            elif "lang=ko" in photon_reverse_calls[0]:
+                problems.append(f"Photon 역주소가 lang=ko 를 보냅니다: {photon_reverse_calls[0]}")
+            elif "lang=default" not in photon_reverse_calls[0]:
+                problems.append(f"Photon 역주소 언어가 default 가 아닙니다: {photon_reverse_calls[0]}")
+        rev.close()
+
+        # ---------- P2-05: 실시간 0곳과 조회 실패를 화면에서 구분 ----------
+        def live_state_page(handler) -> str:
+            page_live = browser.new_page(viewport=DESKTOP)
+            page_live.route("**/api/interpreter", handler)
+            page_live.route("**/api/0.6/map.json*", handler)
+            page_live.goto(base, wait_until="load")
+            page_live.wait_for_timeout(500)
+            add_search(page_live, "사당역", wait=200)
+            add_search(page_live, "이수역", wait=200)
+            try:
+                page_live.wait_for_function(
+                    "() => { const chip = document.querySelector('.nearby-live');"
+                    " return !!(chip && chip.dataset.live && chip.dataset.live !== 'loading'); }",
+                    timeout=25000,
+                )
+                page_live.wait_for_timeout(300)
+                return page_live.evaluate(
+                    "() => { const chip = document.querySelector('.nearby-live');"
+                    " const empty = document.querySelector('.nearby-empty');"
+                    " return JSON.stringify({ status: chip && chip.dataset.live,"
+                    " text: chip && chip.textContent.trim(),"
+                    " error: !!(empty && empty.classList.contains('is-error')),"
+                    " body: empty && empty.textContent }); }"
+                ), page_live
+            except Exception:
+                return "", page_live
+
+        empty_json = {"elements": []}
+        empty_state, empty_page = live_state_page(
+            lambda route: route.fulfill(status=200, content_type="application/json",
+                                        body=json.dumps(empty_json)))
+        empty_page.close()
+        if not empty_state:
+            problems.append("실시간 0곳 화면 상태를 읽지 못했습니다")
+        else:
+            state = json.loads(empty_state)
+            if state["status"] != "empty" or "0곳" not in (state["text"] or ""):
+                problems.append(f"진짜 0곳을 '실시간 0곳'으로 알리지 않습니다: {state}")
+            if state["error"]:
+                problems.append("0곳인데 조회 실패처럼 표시합니다")
+
+        fail_state, fail_page = live_state_page(
+            lambda route: route.fulfill(status=503, content_type="application/json", body="{}"))
+        fail_page.close()
+        if not fail_state:
+            problems.append("실시간 조회 실패 화면 상태를 읽지 못했습니다")
+        else:
+            state = json.loads(fail_state)
+            if state["status"] != "error":
+                problems.append(f"조회 실패를 error 로 표시하지 않습니다: {state}")
+            if "0곳" in (state["text"] or ""):
+                problems.append(f"조회 실패를 '실시간 0곳'으로 표시합니다: {state}")
+            if state["body"] and not state["error"]:
+                problems.append(f"조회 실패 안내가 오류 문구가 아닙니다: {state['body']}")
 
         # ---------- 배포본에서만: 지도 핀 상호작용 ----------
         if args.base:
