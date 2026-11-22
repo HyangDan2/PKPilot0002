@@ -144,8 +144,10 @@ the palette is now light violet by default, with Navy & Lavender as the dark the
 - KakaoTalk/SNS share card: a 1200×630 `og-image.png` (Soft Iris light with the violet dual-skew mark,
   `HD2Lab | Midpoint`, “when several meet, the exact middle”, a mini map and hub tiles) plus Open Graph and
   Twitter `summary_large_image` tags
-- Soft Iris light by default and Navy & Lavender dark through the shared 44px floating toggle at the bottom
-  right (`localStorage['hd2-theme']`, applied before the first paint); Naver map tiles keep their own colour
+- Soft Iris light by default and Navy & Lavender dark through the slide switch in the title bar
+  (`localStorage['hd2-theme']`, applied before the first paint). Every surface the app draws — header, bottom
+  sheet, legend, map controls, pin labels, popups, toast — is token-driven and follows the switch; Naver map
+  tiles keep their own colour
 - Header `…` button → HD2Lab portal dropdown: **Web-HQ** · **ApplicationHub** · **GameHub** ·
   **TechnicalHub** (opens in a new tab so the app state survives; closes on outside click and Esc;
   arrow/Home/End keys move; `aria-expanded` stays in sync)
@@ -160,7 +162,7 @@ PKPilot0002/
 ├── manifest.json         PWA manifest (HD2Lab Midpoint)
 ├── favicon.ico · favicon.svg · favicon-32x32.png · apple-touch-icon.png · icon-192.png · icon-512.png
 ├── og-image.png          1200×630 share card (social-preview.png is the same image)
-├── assets/               shared hd2-theme.css / hd2-theme.js (floating light/dark toggle)
+├── assets/               shared hd2-theme.css / hd2-theme.js (binds the header slide switch)
 ├── js/
 │   ├── core.js           pure calculations (distance, midpoint, fairness, URL, hub ranking, nearby places, courses) — no DOM
 │   ├── stations.js       nationwide metro · KTX/SRT · terminal snapshot, 957 places (generated)

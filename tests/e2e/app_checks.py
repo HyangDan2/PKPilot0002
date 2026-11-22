@@ -118,6 +118,64 @@ def flush_live(state: dict, keep: int = 1) -> int:
     return sent
 
 
+
+def _rgba(value: str) -> tuple[float, float, float, float]:
+    match = re.match(r"rgba?\(([^)]+)\)", value or "")
+    if not match:
+        return (0.0, 0.0, 0.0, 0.0)
+    parts = [float(p) for p in re.split(r"[ ,/]+", match.group(1).strip()) if p]
+    while len(parts) < 4:
+        parts.append(1.0)
+    return (parts[0], parts[1], parts[2], parts[3])
+
+
+def luminance(color: str, base: tuple[float, float, float] = (250, 250, 253)) -> float:
+    r, g, b, a = _rgba(color)
+    if a < 1:
+        r, g, b = (r * a + base[0] * (1 - a), g * a + base[1] * (1 - a), b * a + base[2] * (1 - a))
+
+    def channel(value: float) -> float:
+        value /= 255
+        return value / 12.92 if value <= 0.03928 else ((value + 0.055) / 1.055) ** 2.4
+
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+
+
+def contrast(fg: str, bg: str, base: tuple[float, float, float]) -> float:
+    fg_lum, bg_lum = luminance(fg, base), luminance(bg, base)
+    hi, lo = max(fg_lum, bg_lum), min(fg_lum, bg_lum)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def theme_state(page) -> dict:
+    return page.evaluate(
+        """() => {
+          const sw = document.querySelector('#themeSwitch');
+          const read = sel => {
+            const node = document.querySelector(sel);
+            if (!node) return null;
+            const s = getComputedStyle(node);
+            return { bg: s.backgroundColor, color: s.color };
+          };
+          return {
+            theme: document.documentElement.dataset.theme,
+            stored: (() => { try { return localStorage.getItem('hd2-theme'); } catch (e) { return null; } })(),
+            checked: sw ? sw.getAttribute('aria-checked') : null,
+            inHeader: !!(sw && sw.closest('.header-actions')),
+            floating: !!document.querySelector('#hd2ThemeToggle'),
+            meta: (document.querySelector('meta[name=theme-color]') || {}).content,
+            legend: read('.legend'),
+            tool: read('.map-tool'),
+            header: read('.app-header'),
+            popupBg: (() => {
+              const node = document.querySelector('.map-popup');
+              return node ? getComputedStyle(node.parentElement).backgroundColor : null;
+            })(),
+          };
+        }"""
+    )
+
+
 def add_search(page, term: str, wait: int = 700):
     page.fill("#searchInput", term)
     page.wait_for_selector("#searchResults li.res-row", timeout=8000)
@@ -336,6 +394,76 @@ def main() -> int:
                     else:
                         page.keyboard.press("Escape")
                         page.wait_for_timeout(200)
+
+        # ---------- 헤더 라이트/다크 슬라이드 토글 · 테마 추종 ----------
+        if page.locator(".header-actions #themeSwitch").count() == 0:
+            problems.append("헤더에 테마 슬라이드 토글(#themeSwitch)이 없습니다")
+        if page.locator("#themeSwitch[role='switch']").count() == 0:
+            problems.append("테마 토글이 role=switch 가 아닙니다")
+        light = theme_state(page)
+        if light["floating"]:
+            problems.append("지도 우하단 플로팅 테마 버튼(#hd2ThemeToggle)이 남아 있습니다")
+        if light["theme"] != "light" or light["checked"] != "false":
+            problems.append(f"라이트 모드 기본 상태가 아닙니다: {light['theme']}/{light['checked']}")
+        if light["legend"]:
+            if luminance(light["legend"]["bg"]) < 0.6:
+                problems.append(f"라이트 모드 범례 바가 어둡습니다: {light['legend']['bg']}")
+            ratio = contrast(light["legend"]["color"], light["legend"]["bg"], (250, 250, 253))
+            if ratio < 4.5:
+                problems.append(f"라이트 모드 범례 글자 대비가 낮습니다: {ratio:.2f}")
+
+        page.click("#themeSwitch")
+        page.wait_for_timeout(600)
+        dark = theme_state(page)
+        if dark["theme"] != "dark" or dark["checked"] != "true":
+            problems.append(f"토글을 눌러도 다크 모드가 되지 않습니다: {dark['theme']}/{dark['checked']}")
+        if dark["stored"] != "dark":
+            problems.append(f"테마 선택이 localStorage 에 저장되지 않았습니다: {dark['stored']}")
+        if dark["meta"] != "#0B1020":
+            problems.append(f"theme-color 메타가 다크 팔레트가 아닙니다: {dark['meta']}")
+        if dark["floating"]:
+            problems.append("다크 모드에서 플로팅 테마 버튼이 생겼습니다")
+        if dark["legend"]:
+            if luminance(dark["legend"]["bg"], (11, 16, 32)) > 0.2:
+                problems.append(f"다크 모드 범례 바가 밝습니다: {dark['legend']['bg']}")
+            ratio = contrast(dark["legend"]["color"], dark["legend"]["bg"], (11, 16, 32))
+            if ratio < 4.5:
+                problems.append(f"다크 모드 범례 글자 대비가 낮습니다: {ratio:.2f}")
+        if light["tool"] and dark["tool"] and light["tool"]["bg"] == dark["tool"]["bg"]:
+            problems.append(f"지도 도구 버튼이 테마를 따라가지 않습니다: {dark['tool']['bg']}")
+        if light["header"] and dark["header"] and light["header"]["bg"] == dark["header"]["bg"]:
+            problems.append("헤더 배경이 테마를 따라가지 않습니다")
+
+        page.reload(wait_until="load")
+        page.wait_for_timeout(1200)
+        persisted = theme_state(page)
+        if persisted["theme"] != "dark" or persisted["checked"] != "true":
+            problems.append(f"새로고침 뒤 다크 모드가 유지되지 않습니다: {persisted['theme']}/{persisted['checked']}")
+        page.click("#themeSwitch")
+        page.wait_for_timeout(500)
+        if theme_state(page)["theme"] != "light":
+            problems.append("다시 눌러도 라이트 모드로 돌아오지 않습니다")
+
+        # 390px 폰에서 헤더가 한 줄에 들어가고 가로로 넘치지 않는다
+        phone = browser.new_page(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True)
+        phone.goto(base, wait_until="load")
+        phone.wait_for_timeout(1200)
+        for theme in ("light", "dark"):
+            phone.evaluate("t => window.HD2Theme && window.HD2Theme.set(t)", theme)
+            phone.wait_for_timeout(400)
+            box = phone.evaluate(
+                "() => ({ scroll: document.documentElement.scrollWidth, inner: window.innerWidth,"
+                " header: document.querySelector('.app-header').getBoundingClientRect().height,"
+                " switch: document.querySelector('#themeSwitch').getBoundingClientRect().width })"
+            )
+            if box["scroll"] > box["inner"] + 1:
+                problems.append(f"390px {theme} 모드에서 헤더가 가로로 넘칩니다: {box}")
+            if box["header"] > 60:
+                problems.append(f"390px {theme} 모드에서 헤더가 두 줄로 접혔습니다: {box['header']}px")
+            if box["switch"] < 40:
+                problems.append(f"390px {theme} 모드에서 테마 토글이 너무 작습니다: {box['switch']}px")
+        phone.evaluate("t => window.HD2Theme && window.HD2Theme.set('light')")
+        phone.close()
 
         for error in console_errors:
             problems.append(f"콘솔 오류: {error}")

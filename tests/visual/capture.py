@@ -104,6 +104,72 @@ def set_stage(page, stage: str):
         page.wait_for_timeout(650)
 
 
+
+def css_colors(page, selector: str) -> tuple[str, str]:
+    """선택자의 계산된 배경색·글자색 (테마 추종 검사용)."""
+    return page.eval_on_selector(
+        selector,
+        "node => { const s = getComputedStyle(node); return [s.backgroundColor, s.color]; }",
+    )
+
+
+def _rgba(value: str) -> tuple[float, float, float, float]:
+    match = re.match(r"rgba?\(([^)]+)\)", value or "")
+    if not match:
+        return (0.0, 0.0, 0.0, 0.0)
+    parts = [float(p) for p in re.split(r"[ ,/]+", match.group(1).strip()) if p]
+    while len(parts) < 4:
+        parts.append(1.0)
+    return (parts[0], parts[1], parts[2], parts[3])
+
+
+def luminance(color: str, base: tuple[float, float, float] = (250, 250, 253)) -> float:
+    """CSS 색의 상대 휘도. 반투명이면 base 위에 얹은 값으로 본다."""
+    r, g, b, a = _rgba(color)
+    if a < 1:
+        r, g, b = (r * a + base[0] * (1 - a), g * a + base[1] * (1 - a), b * a + base[2] * (1 - a))
+
+    def channel(value: float) -> float:
+        value /= 255
+        return value / 12.92 if value <= 0.03928 else ((value + 0.055) / 1.055) ** 2.4
+
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+
+
+def contrast(fg: str, bg: str, base: tuple[float, float, float]) -> float:
+    """base 위에 fg·bg 를 얹었을 때의 명암비 (1~21)."""
+    fg_lum = luminance(fg, base)
+    bg_lum = luminance(bg, base)
+    hi, lo = max(fg_lum, bg_lum), min(fg_lum, bg_lum)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def theme_state(page) -> dict:
+    return page.evaluate(
+        """() => {
+          const root = document.documentElement;
+          const sw = document.querySelector('#themeSwitch');
+          const legend = document.querySelector('.legend');
+          const tool = document.querySelector('.map-tool');
+          const header = document.querySelector('.app-header');
+          const reads = node => {
+            const s = getComputedStyle(node);
+            return { bg: s.backgroundColor, color: s.color };
+          };
+          return {
+            theme: root.dataset.theme,
+            stored: (() => { try { return localStorage.getItem('hd2-theme'); } catch (e) { return null; } })(),
+            switched: sw ? sw.getAttribute('aria-checked') : null,
+            label: sw ? sw.getAttribute('aria-label') : null,
+            floating: !!document.querySelector('#hd2ThemeToggle'),
+            meta: (document.querySelector('meta[name=theme-color]') || {}).content,
+            legend: legend ? reads(legend) : null,
+            tool: tool ? reads(tool) : null,
+            header: header ? reads(header) : null,
+          };
+        }"""
+    )
+
 def station_name(page) -> str:
     return page.locator(".station-name").first.inner_text().strip()
 
@@ -779,6 +845,118 @@ def main() -> int:
             m.wait_for_timeout(400)
             if shots:
                 shot(m, "mobile-live-list")
+
+        # ---------------- 라이트·다크 테마 (헤더 슬라이드 토글 · 범례 동기화) ----------------
+        theme_page = browser.new_page(viewport=MOBILE, device_scale_factor=2, is_mobile=True, has_touch=True)
+        theme_page.on("pageerror", lambda exc: console_errors.append("theme: " + str(exc)))
+        theme_page.goto(base, wait_until="load")
+        settle(theme_page, 2400)
+        add_preset(theme_page, "강남")
+        add_preset(theme_page, "홍대입구")
+        settle(theme_page, 1600)
+
+        if theme_page.locator(".header-actions #themeSwitch").count() == 0:
+            problems.append("상단 타이틀바에 테마 슬라이드 토글(#themeSwitch)이 없습니다")
+        if theme_page.locator("#themeSwitch[role='switch']").count() == 0:
+            problems.append("테마 토글이 role=switch 가 아닙니다")
+
+        light = theme_state(theme_page)
+        if light["floating"]:
+            problems.append("지도 우하단 플로팅 테마 버튼(#hd2ThemeToggle)이 남아 있습니다")
+        if light["theme"] != "light":
+            problems.append(f"기본 테마가 라이트가 아닙니다: {light['theme']}")
+        if light["switched"] != "false":
+            problems.append(f"라이트 모드에서 토글이 꺼짐 상태가 아닙니다: {light['switched']}")
+        if not light["legend"]:
+            problems.append("범례 바가 없습니다")
+        else:
+            light_legend_lum = luminance(light["legend"]["bg"])
+            if light_legend_lum < 0.6:
+                problems.append(f"라이트 모드 범례 바가 어둡습니다: {light['legend']['bg']}")
+            ratio = contrast(light["legend"]["color"], light["legend"]["bg"], (250, 250, 253))
+            if ratio < 4.5:
+                problems.append(f"라이트 모드 범례 글자 대비가 낮습니다: {ratio:.2f}")
+
+        overflow = theme_page.evaluate(
+            "() => ({ scroll: document.documentElement.scrollWidth, inner: window.innerWidth,"
+            " header: document.querySelector('.app-header').getBoundingClientRect().height })"
+        )
+        if overflow["scroll"] > overflow["inner"] + 1:
+            problems.append(f"390px 라이트 모드에서 헤더가 가로로 넘칩니다: {overflow}")
+        if overflow["header"] > 60:
+            problems.append(f"390px 라이트 모드에서 헤더가 두 줄로 접혔습니다: {overflow['header']}px")
+        if shots:
+            set_stage(theme_page, "mini")
+            shot(theme_page, "mobile-theme-light")
+
+        theme_page.click("#themeSwitch")
+        theme_page.wait_for_timeout(600)
+        dark = theme_state(theme_page)
+        if dark["theme"] != "dark":
+            problems.append(f"토글을 눌러도 다크 모드가 되지 않습니다: {dark['theme']}")
+        if dark["switched"] != "true":
+            problems.append(f"다크 모드에서 토글이 켜짐 상태가 아닙니다: {dark['switched']}")
+        if dark["stored"] != "dark":
+            problems.append(f"테마 선택이 저장되지 않았습니다: {dark['stored']}")
+        if dark["meta"] != "#0B1020":
+            problems.append(f"theme-color 메타가 다크 팔레트가 아닙니다: {dark['meta']}")
+        if dark["floating"]:
+            problems.append("다크 모드에서 플로팅 테마 버튼이 생겼습니다")
+        if dark["legend"]:
+            dark_legend_lum = luminance(dark["legend"]["bg"], (11, 16, 32))
+            if dark_legend_lum > 0.2:
+                problems.append(f"다크 모드 범례 바가 밝습니다: {dark['legend']['bg']}")
+            ratio = contrast(dark["legend"]["color"], dark["legend"]["bg"], (11, 16, 32))
+            if ratio < 4.5:
+                problems.append(f"다크 모드 범례 글자 대비가 낮습니다: {ratio:.2f}")
+        if dark["tool"] and light["tool"] and dark["tool"]["bg"] == light["tool"]["bg"]:
+            problems.append(f"지도 도구 버튼이 테마를 따라가지 않습니다: {dark['tool']['bg']}")
+        if dark["header"] and light["header"] and dark["header"]["bg"] == light["header"]["bg"]:
+            problems.append("헤더 배경이 테마를 따라가지 않습니다")
+        if shots:
+            shot(theme_page, "mobile-theme-dark")
+            set_stage(theme_page, "full")
+            theme_page.evaluate("document.getElementById('panelScroll').scrollTop = 0")
+            theme_page.wait_for_timeout(400)
+            shot(theme_page, "mobile-theme-dark-sheet")
+
+        # 새로고침해도 선택한 테마가 유지된다
+        theme_page.reload(wait_until="load")
+        settle(theme_page, 2000)
+        after_reload = theme_state(theme_page)
+        if after_reload["theme"] != "dark" or after_reload["switched"] != "true":
+            problems.append(f"새로고침 뒤 다크 모드가 유지되지 않습니다: {after_reload['theme']}/{after_reload['switched']}")
+
+        theme_page.click("#themeSwitch")
+        theme_page.wait_for_timeout(500)
+        if theme_state(theme_page)["theme"] != "light":
+            problems.append("다시 눌러도 라이트 모드로 돌아오지 않습니다")
+        theme_page.close()
+
+        # 데스크톱 다크 화면
+        dark_desktop = browser.new_page(viewport=DESKTOP, device_scale_factor=1.5)
+        dark_desktop.goto(base, wait_until="load")
+        settle(dark_desktop, 2400)
+        add_preset(dark_desktop, "강남")
+        add_preset(dark_desktop, "홍대입구")
+        settle(dark_desktop, 1600)
+        dark_desktop.click("#themeSwitch")
+        dark_desktop.wait_for_timeout(700)
+        if shots:
+            shot(dark_desktop, "desktop-theme-dark")
+        dark_desktop.close()
+
+        # 가장 좁은 폰(320px)에서도 헤더가 한 줄에 들어간다
+        narrow = browser.new_page(viewport={"width": 320, "height": 760})
+        narrow.goto(base, wait_until="load")
+        narrow.wait_for_timeout(1200)
+        narrow_state = narrow.evaluate(
+            "() => ({ scroll: document.documentElement.scrollWidth, inner: window.innerWidth,"
+            " header: document.querySelector('.app-header').getBoundingClientRect().height })"
+        )
+        if narrow_state["scroll"] > narrow_state["inner"] + 1:
+            problems.append(f"320px 에서 헤더가 가로로 넘칩니다: {narrow_state}")
+        narrow.close()
 
         if console_errors:
             problems.extend(f"[console] {e}" for e in console_errors)

@@ -1,7 +1,11 @@
 /* ==========================================================================
    HD2Lab · shared Light/Dark theme (Navy & Lavender)
    --------------------------------------------------------------------------
-   One localStorage key, one floating toggle, every route.
+   One localStorage key, one toggle, every route.
+
+   A page that wants the toggle in its own header marks that control with
+   `data-hd2-theme-toggle`; this script then paints and wires that element
+   instead of adding the floating bottom-right button.
 
      localStorage['hd2-theme'] = 'light' | 'dark'   (default 'light')
 
@@ -71,6 +75,9 @@
     if (!button) return;
     var text = label(theme);
     button.setAttribute('aria-pressed', theme === 'dark' ? 'true' : 'false');
+    if (button.getAttribute('role') === 'switch') {
+      button.setAttribute('aria-checked', theme === 'dark' ? 'true' : 'false');
+    }
     button.setAttribute('aria-label', text);
     button.setAttribute('title', text);
   }
@@ -101,7 +108,27 @@
     moon: '<path d="M20.4 14.4A8.6 8.6 0 0 1 9.6 3.6a8.6 8.6 0 1 0 10.8 10.8z"/>'
   };
 
+  /* the page's own header control, when it has one */
+  function inlineToggle() {
+    return document.querySelector('[data-hd2-theme-toggle]');
+  }
+
+  function wire(el) {
+    if (!el || el.dataset.hd2ThemeWired === '1') return;
+    el.dataset.hd2ThemeWired = '1';
+    el.addEventListener('click', function () {
+      apply(current() === 'dark' ? 'light' : 'dark', { persist: true });
+    });
+  }
+
   function buildButton() {
+    var inline = inlineToggle();
+    if (inline) {
+      wire(inline);
+      button = inline;
+      paintButton(current());
+      return;
+    }
     if (document.getElementById('hd2ThemeToggle')) return;
     var el = document.createElement('button');
     el.type = 'button';
@@ -120,9 +147,7 @@
       el.appendChild(svg);
     });
 
-    el.addEventListener('click', function () {
-      apply(current() === 'dark' ? 'light' : 'dark', { persist: true });
-    });
+    wire(el);
 
     document.body.appendChild(el);
     button = el;
