@@ -3070,7 +3070,7 @@ body.is-dragging-pin .pin-person {
   display: flex;
   align-items: center;
   gap: 10px;
-  max-width: min(94vw, 520px);
+  width: min(94vw, 520px);
   padding: 10px 12px 10px 16px;
   border-radius: var(--radius);
   border: 1px solid var(--border-strong);
@@ -3489,9 +3489,11 @@ body.is-dragging-pin .pin-person {
   }
 
   .map-fallback {
-    bottom: calc(var(--sheet-h, var(--peek-h)) + 68px);
+    /* 바텀 시트가 어떤 높이든 가리지 않도록 헤더 아래에 띄운다 */
+    top: calc(var(--header-h, 54px) + 10px);
+    bottom: auto;
+    width: 94vw;
     flex-wrap: wrap;
-    max-width: 94vw;
   }
 
   .fair {
