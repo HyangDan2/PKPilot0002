@@ -322,6 +322,20 @@ def main() -> int:
                     else:
                         page.keyboard.press("Escape")
                         page.wait_for_timeout(200)
+                # 코스 ①·② 핀도 같은 레이어 처리기를 쓴다 — 장소 확인 뒤에도 살아 있어야 한다
+                page.click(".nearby-tabs button[data-place-view='course']")
+                page.wait_for_timeout(700)
+                course_pins = page.locator(".pin-course")
+                if course_pins.count() != 2:
+                    problems.append(f"코스 핀이 2개가 아닙니다: {course_pins.count()}")
+                else:
+                    course_pins.first.click()
+                    page.wait_for_timeout(500)
+                    if page.locator(".map-popup").count() == 0:
+                        problems.append("장소 확인 뒤 코스 핀을 눌러도 말풍선이 열리지 않습니다")
+                    else:
+                        page.keyboard.press("Escape")
+                        page.wait_for_timeout(200)
 
         for error in console_errors:
             problems.append(f"콘솔 오류: {error}")
