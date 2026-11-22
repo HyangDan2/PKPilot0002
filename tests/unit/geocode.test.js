@@ -8,13 +8,16 @@
 import {
   GEOCODE_CACHE_TTL_MS,
   PHOTON_LANG,
+  coordKey,
   createGeocoder,
   createRateLimiter,
   describeNominatimAddress,
   describePhotonAddress,
   mergeSearchRows,
   proxyEndpoints,
+  retryAfterMsOf,
 } from '../../js/geocode.js';
+import { anchorCoordKey } from '../../js/live_places.js';
 import { assert, assertEqual, test } from './harness.js';
 
 const json = payload => ({ ok: true, status: 200, json: async () => payload });
@@ -365,4 +368,151 @@ test('프록시: 전역 HD2_GEOCODE_PROXY 만 채워도 프록시로 붙는다',
   } finally {
     delete globalThis.HD2_GEOCODE_PROXY;
   }
+});
+
+/* ------------------------------------------------------------------
+   P1-02 · 요청량 관리 — 429 쿨다운(제공자 자동 전환)·Retry-After·역주소 병합
+   Nominatim 은 같은 앱에서 초당 1건을 넘기면 429 로 막는다. 한 번 막히면
+   쿨다운 동안 Photon 을 먼저 쓰고, 끝나면 주 제공자로 돌아온다.
+   ------------------------------------------------------------------ */
+
+const tooMany = (retryAfter = '') => ({
+  ok: false,
+  status: 429,
+  headers: { get: name => (String(name).toLowerCase() === 'retry-after' ? retryAfter : null) },
+  json: async () => ({}),
+});
+
+test('쿨다운: 429 뒤에는 Photon 을 먼저 쓰고 Nominatim 을 다시 부르지 않는다', async () => {
+  let now = 1_000_000;
+  let nominatimCalls = 0;
+  const fetchImpl = fetchStub([
+    ['nominatim.openstreetmap.org/search', () => { nominatimCalls += 1; return tooMany(); }],
+    ['photon.komoot.io/api', () => json(PHOTON_SEARCH)],
+  ]);
+  const geocoder = createGeocoder({
+    fetchImpl, minIntervalMs: 0, retries: 0, cooldownMs: 60_000, now: () => now,
+  });
+
+  const first = await geocoder.search('강남역');
+  assertEqual(first[0].source, 'photon');
+  assertEqual(nominatimCalls, 1);
+  assertEqual(geocoder.providerState().coolingDown, true, '429 뒤 쿨다운이 걸리지 않았다');
+
+  const afterFirst = nominatimCalls;
+  now += 5_000;
+  const second = await geocoder.search('역삼역');
+  assertEqual(nominatimCalls, afterFirst, '쿨다운 중인데 Nominatim 을 다시 불렀다');
+  assertEqual(second[0].source, 'photon');
+  assert(geocoder.stats.providerSwitches >= 1, '제공자 자동 전환 횟수가 기록되지 않았다');
+
+  now += 60_000; // 쿨다운 만료 — 주 제공자를 다시 시도해야 한다
+  await geocoder.search('선릉역');
+  assertEqual(nominatimCalls, afterFirst + 1, '쿨다운이 끝났는데 Nominatim 을 다시 시도하지 않았다');
+});
+
+test('쿨다운: 연속 429 면 대기 시간이 2배씩 늘고 최대값을 넘지 않는다', async () => {
+  let now = 1_000_000;
+  const fetchImpl = fetchStub([
+    ['nominatim.openstreetmap.org/search', () => tooMany()],
+    ['photon.komoot.io/api', () => json(PHOTON_SEARCH)],
+  ]);
+  const geocoder = createGeocoder({
+    fetchImpl, minIntervalMs: 0, retries: 0, cooldownMs: 10_000, cooldownMaxMs: 25_000, now: () => now,
+  });
+  await geocoder.search('강남역');
+  assertEqual(geocoder.providerState().remainingMs, 10_000);
+  now += 10_000;
+  await geocoder.search('역삼역');   // 쿨다운 만료 → 다시 429
+  assertEqual(geocoder.providerState().remainingMs, 20_000);
+  now += 20_000;
+  await geocoder.search('선릉역');
+  assertEqual(geocoder.providerState().remainingMs, 25_000, '쿨다운 최대값을 넘었다');
+});
+
+test('쿨다운: Retry-After 가 있으면 그 시간만큼 기다린다', async () => {
+  const fetchImpl = fetchStub([
+    ['nominatim.openstreetmap.org/search', () => tooMany('120')],
+    ['photon.komoot.io/api', () => json(PHOTON_SEARCH)],
+  ]);
+  const geocoder = createGeocoder({ fetchImpl, minIntervalMs: 0, retries: 0, cooldownMs: 1_000 });
+  await geocoder.search('강남역');
+  assert(geocoder.providerState().remainingMs >= 119_000,
+    `Retry-After 를 무시했다: ${geocoder.providerState().remainingMs}ms`);
+});
+
+test('Retry-After: 초 단위·HTTP 날짜를 모두 밀리초로 읽는다', () => {
+  const header = value => ({ headers: { get: () => value } });
+  assertEqual(retryAfterMsOf(header('30')), 30_000);
+  assertEqual(retryAfterMsOf(header('')), 0);
+  assertEqual(retryAfterMsOf({}), 0);
+  const soon = new Date(Date.now() + 60_000).toUTCString();
+  const parsed = retryAfterMsOf(header(soon));
+  assert(parsed > 55_000 && parsed <= 60_000, `HTTP 날짜를 읽지 못했다: ${parsed}`);
+});
+
+test('역주소: 같은 좌표가 동시에 오면 요청 하나를 함께 쓴다', async () => {
+  let calls = 0;
+  let release;
+  const fetchImpl = async () => {
+    calls += 1;
+    return new Promise(resolve => {
+      release = () => resolve(json({ address: { road: '테스트로' }, display_name: '테스트로 1' }));
+    });
+  };
+  const geocoder = createGeocoder({ fetchImpl, minIntervalMs: 0 });
+  const first = geocoder.reverse({ lat: 37.497912, lng: 127.027612 });
+  const second = geocoder.reverse({ lat: 37.497912, lng: 127.027612 });
+  await sleep(5);
+  release();
+  const [a, b] = await Promise.all([first, second]);
+  assertEqual(calls, 1, `같은 좌표 역주소가 ${calls}번 나갔다`);
+  assertEqual(geocoder.stats.coalesced, 1);
+  assertEqual(a.text, b.text);
+});
+
+/* ------------------------------------------------------------------
+   P2-05 · 0건과 장애를 구분하고, 역주소 0건도 대체 제공자를 확인한다
+   ------------------------------------------------------------------ */
+
+test('역주소: Nominatim 이 주소 없이 200 을 주면 Photon 역주소를 시도한다', async () => {
+  const fetchImpl = fetchStub([
+    ['nominatim.openstreetmap.org/reverse', () => json({ error: 'Unable to geocode' })],
+    ['photon.komoot.io/reverse', () => json(PHOTON_REVERSE)],
+  ]);
+  const geocoder = createGeocoder({ fetchImpl, minIntervalMs: 0, retries: 0 });
+  const result = await geocoder.reverse({ lat: 37.4979, lng: 127.0276 });
+  assertEqual(result.source, 'photon', '역주소 0건 뒤 Photon 을 쓰지 않았다');
+  assertEqual(result.text, '서울특별시 강남구 강남대로');
+  assert(fetchImpl.calls.some(call => call.url.includes('photon.komoot.io/reverse')));
+});
+
+test('역주소: 두 제공자 모두 주소가 없으면 no_result, 둘 다 실패하면 실패 코드', async () => {
+  const emptyFetch = fetchStub([
+    ['nominatim.openstreetmap.org/reverse', () => json({})],
+    ['photon.komoot.io/reverse', () => json({ features: [] })],
+  ]);
+  const emptyGeocoder = createGeocoder({ fetchImpl: emptyFetch, minIntervalMs: 0, retries: 0 });
+  const empty = await emptyGeocoder.reverse({ lat: 37.5, lng: 127.0 });
+  assertEqual(empty.text, '');
+  assertEqual(empty.error, 'no_result', `빈 응답을 장애와 구분하지 않았다: ${empty.error}`);
+
+  const brokenFetch = fetchStub([
+    ['nominatim.openstreetmap.org/reverse', () => ({ ok: false, status: 500, json: async () => ({}) })],
+    ['photon.komoot.io/reverse', () => ({ ok: false, status: 503, json: async () => ({}) })],
+  ]);
+  const brokenGeocoder = createGeocoder({ fetchImpl: brokenFetch, minIntervalMs: 0, retries: 0 });
+  const broken = await brokenGeocoder.reverse({ lat: 37.5, lng: 127.0 });
+  assertEqual(broken.error, 'request_failed', `장애를 빈 응답으로 뭉갰다: ${broken.error}`);
+});
+
+/* ------------------------------------------------------------------
+   P2-03 · 좌표 키 정밀도 — 역주소 캐시도 실시간 POI 캐시와 같은 6자리
+   ------------------------------------------------------------------ */
+
+test('좌표 키: 지오코더와 실시간 POI 캐시가 같은 6자리 표기를 쓴다', () => {
+  assertEqual(coordKey(37.49791234, 127.02761234), '37.497912,127.027612');
+  assertEqual(coordKey(37.49791234, 127.02761234), anchorCoordKey(37.49791234, 127.02761234));
+  assert(coordKey(37.4979, 127.0276) !== coordKey(37.49795, 127.0276),
+    '5m 이동을 같은 좌표 키로 뭉갰다 (4자리 키)');
 });

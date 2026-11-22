@@ -8,10 +8,13 @@
 
    - 하나의 레이트 리미터(기본 1.1초 간격)를 두 요청 종류가 함께 쓴다
    - 메모리 캐시 + TTL (같은 주소·같은 질의는 네트워크를 다시 쓰지 않는다)
-   - 같은 질의가 동시에 들어오면 요청 하나를 함께 쓴다 (in-flight 병합)
-   - 8초 타임아웃, 429·5xx 는 한 번 재시도
+   - 같은 질의·같은 좌표가 동시에 들어오면 요청 하나를 함께 쓴다 (in-flight 병합)
+   - 8초 타임아웃, 429·5xx 는 지수 백오프로 한 번 재시도 (Retry-After 존중)
    - Nominatim 실패 시 Photon 대체 검색 → 그래도 실패하면 GeocodeError
    - Nominatim 이 '결과 없음'(HTTP 200 + [])을 주면 Photon 도 확인해 합친다
+   - 429 를 받으면 쿨다운(기본 1분, 연속이면 2배씩 최대 10분) 동안 Photon 을
+     먼저 쓴다 — 요청량이 몰려도 매번 Nominatim 에 부딪히지 않는다
+   - 좌표 키는 coordKey() 한 곳에서 만든다 (소수점 6자리 — 앱 저장소도 같은 키)
    - 서버 프록시로 바꿀 때는 createGeocoder({ proxyUrl }) 또는 전역
      globalThis.HD2_GEOCODE_PROXY 하나로 갈아끼우면 된다 (proxyEndpoints 참고)
    ================================================================== */
@@ -39,6 +42,18 @@ export const PHOTON_LANG = 'default';
 /** Nominatim 공개 인스턴스 예절 — 초당 1건을 넘기지 않는다. */
 export const GEOCODE_MIN_INTERVAL_MS = 1100;
 export const GEOCODE_TIMEOUT_MS = 8000;
+/** 429 를 받은 뒤 Photon 만 쓰는 시간 — 연속으로 막히면 2배씩 늘린다. */
+export const GEOCODE_COOLDOWN_MS = 60 * 1000;
+export const GEOCODE_COOLDOWN_MAX_MS = 10 * 60 * 1000;
+/**
+ * 좌표 키 — 캐시(역주소)·앱 주소 저장소·실시간 POI 캐시가 모두 이 규칙을 쓴다.
+ * 소수점 6자리 ≈ 0.11m. 네 곳이 서로 다른 자릿수를 쓰면 같은 자리를 두 번 묻거나
+ * 다른 자리의 주소를 재사용하게 된다.
+ */
+export const COORD_KEY_DIGITS = 6;
+export function coordKey(lat, lng) {
+  return `${Number(lat).toFixed(COORD_KEY_DIGITS)},${Number(lng).toFixed(COORD_KEY_DIGITS)}`;
+}
 /** 같은 질의·같은 좌표는 30분 동안 다시 묻지 않는다 (서버 요청량 절감) */
 export const GEOCODE_CACHE_TTL_MS = 30 * 60 * 1000;
 /** '결과 없음'은 금방 낡을 수 있으니 짧게만 기억한다 */
@@ -205,6 +220,24 @@ export function describeNominatimAddress(data) {
 }
 
 /**
+ * Retry-After 헤더 — 초 단위 숫자나 HTTP 날짜 둘 다 온다.
+ * 헤더를 읽을 수 없는 모의 응답이면 0 (백오프 기본값을 쓴다).
+ */
+export function retryAfterMsOf(response) {
+  try {
+    const raw = response?.headers?.get ? response.headers.get('Retry-After') : '';
+    if (!raw) return 0;
+    const seconds = Number(raw);
+    if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000);
+    const at = Date.parse(raw);
+    if (Number.isFinite(at)) return Math.max(0, at - Date.now());
+  } catch {
+    // 헤더 접근이 막힌 응답 — 기본 백오프로 넘긴다
+  }
+  return 0;
+}
+
+/**
  * 지오코더 인스턴스. 테스트·서버 전환을 위해 의존성을 모두 주입받는다.
  *   fetchImpl, schedule(레이트 리미터), timeoutMs, retries, cacheTtlMs, now, endpoints
  */
@@ -219,12 +252,43 @@ export function createGeocoder(options = {}) {
   const cacheTtlMs = options.cacheTtlMs ?? GEOCODE_CACHE_TTL_MS;
   const emptyTtlMs = options.emptyTtlMs ?? GEOCODE_EMPTY_TTL_MS;
   const fallbackOnEmpty = options.fallbackOnEmpty !== false;
+  const cooldownMs = options.cooldownMs ?? GEOCODE_COOLDOWN_MS;
+  const cooldownMaxMs = options.cooldownMaxMs ?? GEOCODE_COOLDOWN_MAX_MS;
   const now = options.now || (() => Date.now());
   const schedule = options.schedule || createRateLimiter(options.minIntervalMs ?? GEOCODE_MIN_INTERVAL_MS);
 
   const cache = new Map();
   const inflight = new Map();
-  const stats = { requests: 0, cached: 0, failures: 0, fallbacks: 0, emptyFallbacks: 0, coalesced: 0 };
+  const reverseInflight = new Map();
+  const stats = {
+    requests: 0, cached: 0, failures: 0, fallbacks: 0, emptyFallbacks: 0, coalesced: 0,
+    providerSwitches: 0, cooldowns: 0,
+  };
+
+  /* 주 제공자 쿨다운 — 429 를 받으면 잠시 Photon 을 먼저 쓴다. */
+  let cooldownUntil = 0;
+  let cooldownStreak = 0;
+  const primaryReady = () => !fallback || now() >= cooldownUntil;
+
+  function notePrimaryFailure(error) {
+    if (!fallback || error?.code !== 'rate_limited') return;
+    cooldownStreak += 1;
+    const backoff = Math.min(cooldownMs * 2 ** (cooldownStreak - 1), cooldownMaxMs);
+    const wait = Math.max(backoff, Number(error?.retryAfterMs) || 0);
+    cooldownUntil = now() + wait;
+    stats.cooldowns += 1;
+  }
+
+  function providerState() {
+    return {
+      primary: primary.id,
+      fallback: fallback?.id || '',
+      coolingDown: !primaryReady(),
+      cooldownUntil,
+      cooldownStreak,
+      remainingMs: Math.max(0, cooldownUntil - now()),
+    };
+  }
 
   function readCache(key) {
     const hit = cache.get(key);
@@ -246,11 +310,19 @@ export function createGeocoder(options = {}) {
     }
   }
 
+  /** 재시도 간격 — Retry-After 가 있으면 그 값을, 없으면 지수 백오프 + 약간의 흔들림. */
+  function waitForRetry(error, attempt) {
+    const retryAfter = Number(error?.retryAfterMs) || 0;
+    if (retryAfter > 0) return retryAfter;
+    const base = retryDelayMs * 2 ** Math.max(0, attempt - 1);
+    return Math.round(base + base * 0.15 * Math.random());
+  }
+
   /** 한 번의 HTTP 요청 — 레이트 리미터·타임아웃·재시도 포함. 429 는 rateLimited 로 표시한다. */
   async function requestJson(url, label = 'geocode') {
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt += 1) {
-      if (attempt > 0) await delay(retryDelayMs * attempt);
+      if (attempt > 0) await delay(waitForRetry(lastError, attempt));
       try {
         // 레이트 리미터 안에서 요청해야 재시도까지 최소 간격이 지켜진다.
         const payload = await schedule(async () => {
@@ -265,9 +337,16 @@ export function createGeocoder(options = {}) {
             if (response.status === 429) {
               const error = new Error('HTTP 429');
               error.rateLimited = true;
+              error.retryAfterMs = retryAfterMsOf(response);
               throw error;
             }
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            if (!response.ok) {
+              const error = new Error(`HTTP ${response.status}`);
+              // 5xx 는 잠깐 뒤 다시 해 볼 만한 실패다 (게이트웨이 과부하 등)
+              error.serverError = response.status >= 500;
+              error.retryAfterMs = retryAfterMsOf(response);
+              throw error;
+            }
             return await response.json();
           } finally {
             clearTimeout(timer);
@@ -279,12 +358,19 @@ export function createGeocoder(options = {}) {
         if (error && error.name === 'AbortError') {
           lastError = new GeocodeError('timeout', { code: 'timeout', cause: error });
         }
-        // 429 가 아니면 재시도해도 같은 결과일 가능성이 크다 — 다음 어댑터로 넘긴다.
-        if (!error?.rateLimited) break;
+        // 429·5xx 만 다시 해 보고, 그 밖의 실패는 다음 어댑터로 넘긴다.
+        if (!error?.rateLimited && !error?.serverError) break;
       }
     }
     stats.failures += 1;
-    throw new GeocodeError(label, { code: lastError?.rateLimited ? 'rate_limited' : 'request_failed', cause: lastError });
+    const rateLimited = Boolean(lastError?.rateLimited);
+    const thrown = new GeocodeError(label, {
+      code: rateLimited ? 'rate_limited' : 'request_failed',
+      cause: lastError,
+    });
+    thrown.retryAfterMs = Number(lastError?.retryAfterMs) || 0;
+    thrown.rateLimited = rateLimited;
+    throw thrown;
   }
 
   function searchNominatim(query) {
@@ -302,7 +388,8 @@ export function createGeocoder(options = {}) {
   }
 
   function reverseNominatim(point) {
-    const url = `${primary.reverse}?format=jsonv2&lat=${Number(point.lat).toFixed(6)}&lon=${Number(point.lng).toFixed(6)}&zoom=18&addressdetails=1&accept-language=ko`;
+    const [lat, lng] = coordKey(point.lat, point.lng).split(',');
+    const url = `${primary.reverse}?format=jsonv2&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1&accept-language=ko`;
     return requestJson(url, 'nominatim_reverse').then(data => ({
       text: describeNominatimAddress(data),
       name: String(data?.name || ''),
@@ -311,7 +398,8 @@ export function createGeocoder(options = {}) {
   }
 
   function reversePhoton(point) {
-    const url = `${fallback.reverse}?lat=${Number(point.lat).toFixed(6)}&lon=${Number(point.lng).toFixed(6)}&lang=${PHOTON_LANG}`;
+    const [lat, lng] = coordKey(point.lat, point.lng).split(',');
+    const url = `${fallback.reverse}?lat=${lat}&lon=${lng}&lang=${PHOTON_LANG}`;
     return requestJson(url, 'photon_reverse').then(data => {
       const feature = (data?.features || [])[0];
       return {
@@ -330,10 +418,17 @@ export function createGeocoder(options = {}) {
   async function performSearch(query, key) {
     let rows = [];
     let primaryError = null;
-    try {
-      rows = await searchNominatim(query);
-    } catch (error) {
-      primaryError = error;
+    // 429 쿨다운 중이면 Nominatim 을 건너뛰고 Photon 부터 쓴다.
+    const triedPrimary = primaryReady();
+    if (triedPrimary) {
+      try {
+        rows = await searchNominatim(query);
+      } catch (error) {
+        primaryError = error;
+        notePrimaryFailure(error);
+      }
+    } else {
+      stats.providerSwitches += 1;
     }
 
     if (!fallback) {
@@ -342,10 +437,11 @@ export function createGeocoder(options = {}) {
       return rows;
     }
 
-    if (primaryError) {
+    if (!triedPrimary || primaryError) {
       stats.fallbacks += 1;
       try {
-        rows = await searchPhoton(query);
+        const photonRows = await searchPhoton(query);
+        rows = triedPrimary ? photonRows : mergeSearchRows(rows, photonRows);
       } catch (fallbackError) {
         throw new GeocodeError('search_unavailable', {
           code: 'search_unavailable',
@@ -388,32 +484,60 @@ export function createGeocoder(options = {}) {
   /**
    * 역주소 — 실패해도 던지지 않고 { text:'', source, error } 로 돌려준다.
    * (목록 UI 는 주소가 비어도 좌표로 계속 쓸 수 있어야 한다)
+   * 같은 좌표가 동시에 들어오면 한 번의 요청을 함께 쓴다.
    */
-  async function reverse(point) {
+  function reverse(point) {
     if (!point || !Number.isFinite(Number(point.lat)) || !Number.isFinite(Number(point.lng))) {
-      return { text: '', source: '', error: 'invalid_point' };
+      return Promise.resolve({ text: '', source: '', error: 'invalid_point' });
     }
-    const key = `reverse:${Number(point.lat).toFixed(4)},${Number(point.lng).toFixed(4)}`;
+    const key = `reverse:${coordKey(point.lat, point.lng)}`;
     const hit = readCache(key);
-    if (hit) return hit;
+    if (hit) return Promise.resolve(hit);
+    const pending = reverseInflight.get(key);
+    if (pending) {
+      stats.coalesced += 1;
+      return pending;
+    }
+    const tracked = runReverse(point, key).finally(() => {
+      if (reverseInflight.get(key) === tracked) reverseInflight.delete(key);
+    });
+    reverseInflight.set(key, tracked);
+    return tracked;
+  }
 
+  async function runReverse(point, key) {
     let lastError = null;
-    const adapters = [[primary.id, () => reverseNominatim(point)]];
-    if (fallback) adapters.push([fallback.id, () => reversePhoton(point)]);
-    for (const [id, run] of adapters) {
+    let sawEmpty = false;
+    let emptySource = '';
+    // 429 쿨다운 중이면 Photon 역주소부터 쓴다.
+    const adapters = [];
+    if (primaryReady()) adapters.push([primary.id, () => reverseNominatim(point), true]);
+    else stats.providerSwitches += 1;
+    if (fallback) adapters.push([fallback.id, () => reversePhoton(point), false]);
+    for (const [id, run, isPrimary] of adapters) {
       try {
         const result = await run();
-        if (result.text) writeCache(key, result);
-        return result;
+        if (result.text) {
+          writeCache(key, result);
+          return result;
+        }
+        // 주소가 비어 온 경우(HTTP 200 인데 주소 없음)도 대체 제공자를 확인한다.
+        sawEmpty = true;
+        emptySource = result.source || id;
       } catch (error) {
         lastError = error;
-        if (id === primary.id && fallback) stats.fallbacks += 1;
+        if (isPrimary) {
+          notePrimaryFailure(error);
+          if (fallback) stats.fallbacks += 1;
+        }
       }
     }
+    // 주소를 받은 제공자가 하나도 없을 때: 진짜 빈 응답(no_result)과 요청 실패를 구분한다.
+    if (sawEmpty) return { text: '', source: emptySource, error: 'no_result' };
     return { text: '', source: '', error: lastError?.code || 'reverse_failed' };
   }
 
-  return { search, reverse, stats, cache };
+  return { search, reverse, stats, cache, providerState };
 }
 
 /* 앱이 함께 쓰는 기본 인스턴스 — 역주소와 검색이 같은 큐를 공유한다.
