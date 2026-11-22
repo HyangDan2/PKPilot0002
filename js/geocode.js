@@ -7,13 +7,19 @@
    세워 최소 간격을 지키고, 실패하면 Photon(다른 인프라)으로 넘긴다.
 
    - 하나의 레이트 리미터(기본 1.1초 간격)를 두 요청 종류가 함께 쓴다
+   - 사용자가 직접 누른 주소 검색은 우선순위가 높아, 뒤에 쌓인 역주소 요청을
+     건너뛰고 먼저 나간다 (참가자 12명 역주소가 검색을 13초 막지 않는다)
+   - 더 필요 없어진 역주소 요청은 큐에서 빼거나 진행 중인 요청을 끊는다(cancelReverse)
    - 메모리 캐시 + TTL (같은 주소·같은 질의는 네트워크를 다시 쓰지 않는다)
    - 같은 질의·같은 좌표가 동시에 들어오면 요청 하나를 함께 쓴다 (in-flight 병합)
-   - 8초 타임아웃, 429·5xx 는 지수 백오프로 한 번 재시도 (Retry-After 존중)
+   - 8초 타임아웃, 5xx 만 지수 백오프로 한 번 재시도 (Retry-After 존중)
+   - 429 는 재시도하지 않고 즉시 Photon 으로 넘긴다 — Retry-After(예: 120초)를
+     기다리면 대체 검색이 그만큼 늦어진다
    - Nominatim 실패 시 Photon 대체 검색 → 그래도 실패하면 GeocodeError
    - Nominatim 이 '결과 없음'(HTTP 200 + [])을 주면 Photon 도 확인해 합친다
-   - 429 를 받으면 쿨다운(기본 1분, 연속이면 2배씩 최대 10분) 동안 Photon 을
-     먼저 쓴다 — 요청량이 몰려도 매번 Nominatim 에 부딪히지 않는다
+   - 429 를 받으면 쿨다운(기본 1분, 연속이면 2배씩 최대 10분, Retry-After 우선)
+     동안 Photon 을 먼저 쓴다 — 요청량이 몰려도 매번 Nominatim 에 부딪히지 않는다
+   - 주 제공자가 정상 응답하면 연속 실패 횟수(cooldownStreak)를 초기화한다
    - 좌표 키는 coordKey() 한 곳에서 만든다 (소수점 6자리 — 앱 저장소도 같은 키)
    - 서버 프록시로 바꿀 때는 createGeocoder({ proxyUrl }) 또는 전역
      globalThis.HD2_GEOCODE_PROXY 하나로 갈아끼우면 된다 (proxyEndpoints 참고)
@@ -96,33 +102,111 @@ export class GeocodeError extends Error {
   }
 }
 
+/** 취소된 작업이 던지는 오류 — 사용자 입력이 바뀌어 필요 없어진 요청 */
+export function cancelledError() {
+  const error = new Error('cancelled');
+  error.name = 'CancelError';
+  error.cancelled = true;
+  return error;
+}
+
+/** 요청 하나에 딸린 취소 토큰 — 큐 대기와 진행 중 요청(AbortController)을 함께 끊는다. */
+function makeCancelToken() {
+  const token = { cancelled: false, aborts: new Set() };
+  token.cancel = () => {
+    token.cancelled = true;
+    for (const abort of [...token.aborts]) {
+      try {
+        abort();
+      } catch {
+        /* 이미 끝난 요청 */
+      }
+    }
+    token.aborts.clear();
+  };
+  return token;
+}
+
 /**
  * 최소 간격 큐 — 앞선 작업이 끝난 뒤 간격을 채우고 다음 작업을 시작한다.
  * 테스트에서 간격을 짧게 줄 수 있도록 인자로 받는다.
+ *
+ * - `schedule(task, { priority: 'high' })` 는 아직 시작하지 않은 낮은 우선순위
+ *   작업(역주소)을 건너뛰고 먼저 나간다. 진행 중인 요청은 끊지 않는다.
+ * - 돌려준 promise 의 `cancel()` 은 아직 시작하지 않은 작업을 큐에서 뺀다.
  */
 export function createRateLimiter(minIntervalMs = GEOCODE_MIN_INTERVAL_MS) {
-  let chain = Promise.resolve();
+  const queue = [];
+  let running = false;
   let lastAt = 0;
-  let queued = 0;
+  let seq = 0;
 
-  const schedule = task => {
-    queued += 1;
-    const run = chain.then(async () => {
-      const wait = Math.max(0, minIntervalMs - (Date.now() - lastAt));
-      if (wait) await delay(wait);
+  const pump = () => {
+    if (running) return;
+    if (!queue.length) return;
+    // 우선순위가 높은 작업 먼저, 같으면 들어온 순서대로 (FIFO)
+    let pick = 0;
+    for (let i = 1; i < queue.length; i += 1) {
+      const ahead = queue[i];
+      const best = queue[pick];
+      if (ahead.priority > best.priority
+        || (ahead.priority === best.priority && ahead.seq < best.seq)) pick = i;
+    }
+    const entry = queue.splice(pick, 1)[0];
+    running = true;
+    entry.started = true;
+    const start = () => {
       lastAt = Date.now();
-      return task();
-    });
-    chain = run.then(() => {}, () => {}).then(() => {
-      queued -= 1;
-    });
-    return run;
+      Promise.resolve()
+        .then(entry.task)
+        .then(entry.resolve, entry.reject)
+        .finally(() => {
+          running = false;
+          pump();
+        });
+    };
+    const wait = Math.max(0, minIntervalMs - (Date.now() - lastAt));
+    if (wait) setTimeout(start, wait);
+    else start();
   };
-  schedule.pending = () => queued;
+
+  const schedule = (task, options = {}) => {
+    const entry = {
+      task,
+      priority: options.priority === 'high' ? 1 : 0,
+      seq: (seq += 1),
+      started: false,
+      resolve: null,
+      reject: null,
+    };
+    const promise = new Promise((resolve, reject) => {
+      entry.resolve = resolve;
+      entry.reject = reject;
+    });
+    promise.cancel = () => {
+      if (entry.started) return false;
+      const at = queue.indexOf(entry);
+      if (at >= 0) queue.splice(at, 1);
+      entry.reject(cancelledError());
+      return true;
+    };
+    queue.push(entry);
+    pump();
+    return promise;
+  };
+  schedule.pending = () => queue.length + (running ? 1 : 0);
   return schedule;
 }
 
 const normQuery = value => String(value ?? '').trim().replace(/\s+/g, ' ');
+
+/** OSM 객체 식별자 — 두 제공자가 같은 객체를 가리키면 같은 곳이다. */
+function osmRef(osmType, osmId) {
+  const type = String(osmType || '').toLowerCase().trim();
+  const id = Number(osmId);
+  if (!type || !Number.isFinite(id)) return '';
+  return `osm:${type}/${id}`;
+}
 
 function displayFromNominatim(item) {
   const display = String(item.display_name || '');
@@ -133,12 +217,23 @@ function displayFromNominatim(item) {
     lat: Number(item.lat),
     lng: Number(item.lon),
     source: NOMINATIM.id,
+    id: osmRef(item.osm_type, item.osm_id) || (item.place_id ? `nominatim:${item.place_id}` : ''),
   };
 }
 
-/** 검색 결과 중복 판정 — 같은 좌표(약 33m) 또는 같은 이름이 가까이(약 220m) 있으면 같은 곳 */
-const SAME_PLACE_DEG = 0.0003;
-const SAME_NAME_DEG = 0.002;
+/*
+ * 검색 결과 중복 판정 — 거리만으로 합치지 않는다.
+ * 같은 건물 안의 다른 가게(예: 같은 몰의 식당과 카페), 20m 떨어진 다른 분점은
+ * 서로 다른 장소다. 그래서 식별자·이름·주소·좌표를 함께 본다.
+ *   - OSM 식별자가 같으면 같은 곳 (거리와 무관)
+ *   - 이름이 같으면 60m 안까지 같은 곳 (node·way 로 중복 등록된 같은 가게)
+ *   - 한쪽 이름이 다른 이름을 포함하면 30m 안까지 (지점명이 덧붙은 경우)
+ *   - 이름이 서로 다르면 거리만으로 합치지 않는다
+ *   - 이름이 없거나 한쪽만 있으면 같은 지점(8m) + 같은 주소일 때만
+ */
+export const SAME_PLACE_METERS = 60;
+export const SAME_CONTAINED_NAME_METERS = 30;
+export const SAME_POINT_METERS = 8;
 
 function nameKeyOf(row) {
   return String(row?.name || '')
@@ -148,25 +243,62 @@ function nameKeyOf(row) {
     .toLowerCase();
 }
 
+function addressKeyOf(row) {
+  return String(row?.address || '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[\s,·()'"-]+/g, '')
+    .trim();
+}
+
 function degreesApart(a, b) {
   const lat = Math.abs(Number(a.lat) - Number(b.lat));
   const lng = Math.abs(Number(a.lng) - Number(b.lng)) * Math.cos((Number(a.lat) * Math.PI) / 180);
   return Math.hypot(lat, lng);
 }
 
+/** 두 결과 사이 거리(미터) */
+export function metersApart(a, b) {
+  return degreesApart(a, b) * 111320;
+}
+
+/** 두 검색 결과가 같은 장소인가 — 거리·이름·주소·식별자를 함께 본다. */
+export function isSameSearchPlace(a, b) {
+  if (!a || !b) return false;
+  const idA = String(a.id || '').trim();
+  const idB = String(b.id || '').trim();
+  if (idA && idB && idA === idB) return true;
+
+  const nameA = nameKeyOf(a);
+  const nameB = nameKeyOf(b);
+  const meters = metersApart(a, b);
+
+  if (nameA && nameB) {
+    if (nameA === nameB) return meters <= SAME_PLACE_METERS;
+    const shorter = Math.min(nameA.length, nameB.length);
+    if (shorter >= 3 && (nameA.includes(nameB) || nameB.includes(nameA))) {
+      return meters <= SAME_CONTAINED_NAME_METERS;
+    }
+    // 이름이 다르면 같은 건물·같은 주소라도 다른 곳으로 남긴다.
+    return false;
+  }
+
+  // 이름이 없거나 한쪽만 있는 결과 — 같은 지점이고 주소가 겹칠 때만 같은 곳
+  const addressA = addressKeyOf(a);
+  const addressB = addressKeyOf(b);
+  if (meters > SAME_POINT_METERS) return false;
+  return !addressA || !addressB || addressA === addressB;
+}
+
 /**
- * 두 제공자 결과를 좌표·이름 기준으로 중복 제거해 합친다.
+ * 두 제공자 결과를 식별자·이름·주소·좌표로 중복 제거해 합친다.
  * 앞쪽(주 제공자) 결과의 순서를 유지한다.
  */
 export function mergeSearchRows(primaryRows = [], secondaryRows = []) {
   const merged = [];
   [...primaryRows, ...secondaryRows].forEach(row => {
     if (!row || !Number.isFinite(Number(row.lat)) || !Number.isFinite(Number(row.lng))) return;
-    const name = nameKeyOf(row);
-    const duplicate = merged.some(other => {
-      if (degreesApart(row, other) <= SAME_PLACE_DEG) return true;
-      return Boolean(name) && name === nameKeyOf(other) && degreesApart(row, other) <= SAME_NAME_DEG;
-    });
+    const duplicate = merged.some(other => isSameSearchPlace(row, other));
     if (!duplicate) merged.push(row);
   });
   return merged;
@@ -188,6 +320,7 @@ function rowFromPhoton(feature) {
     lat,
     lng,
     source: PHOTON.id,
+    id: osmRef(props.osm_type, props.osm_id),
   };
 }
 
@@ -260,9 +393,11 @@ export function createGeocoder(options = {}) {
   const cache = new Map();
   const inflight = new Map();
   const reverseInflight = new Map();
+  /** 진행 중·대기 중인 역주소 요청의 취소 토큰 (좌표 키별) */
+  const reverseTokens = new Map();
   const stats = {
     requests: 0, cached: 0, failures: 0, fallbacks: 0, emptyFallbacks: 0, coalesced: 0,
-    providerSwitches: 0, cooldowns: 0,
+    providerSwitches: 0, cooldowns: 0, cancelled: 0,
   };
 
   /* 주 제공자 쿨다운 — 429 를 받으면 잠시 Photon 을 먼저 쓴다. */
@@ -277,6 +412,14 @@ export function createGeocoder(options = {}) {
     const wait = Math.max(backoff, Number(error?.retryAfterMs) || 0);
     cooldownUntil = now() + wait;
     stats.cooldowns += 1;
+  }
+
+  /** 주 제공자가 정상 응답하면 연속 실패 횟수를 되돌린다 — 다음 429 는 다시 1분부터. */
+  function notePrimarySuccess() {
+    if (cooldownStreak !== 0 || cooldownUntil !== 0) {
+      cooldownStreak = 0;
+      cooldownUntil = 0;
+    }
   }
 
   function providerState() {
@@ -311,22 +454,51 @@ export function createGeocoder(options = {}) {
   }
 
   /** 재시도 간격 — Retry-After 가 있으면 그 값을, 없으면 지수 백오프 + 약간의 흔들림. */
+const RETRY_MAX_WAIT_MS = 10 * 1000;
   function waitForRetry(error, attempt) {
     const retryAfter = Number(error?.retryAfterMs) || 0;
-    if (retryAfter > 0) return retryAfter;
+    // 5xx 재시도가 서버의 긴 Retry-After 를 그대로 기다리면 화면이 멈춘 것처럼 보인다.
+    if (retryAfter > 0) return Math.min(retryAfter, RETRY_MAX_WAIT_MS);
     const base = retryDelayMs * 2 ** Math.max(0, attempt - 1);
     return Math.round(base + base * 0.15 * Math.random());
   }
 
-  /** 한 번의 HTTP 요청 — 레이트 리미터·타임아웃·재시도 포함. 429 는 rateLimited 로 표시한다. */
-  async function requestJson(url, label = 'geocode') {
+  /**
+   * 한 번의 HTTP 요청 — 레이트 리미터·타임아웃·재시도 포함. 429 는 rateLimited 로 표시한다.
+   * 429 는 재시도하지 않는다: Retry-After 를 기다리면 대체 제공자가 그만큼 늦어진다.
+   * `priority:'high'` 는 사용자 직접 검색, `cancelToken` 은 필요 없어진 역주소 요청을 끊는다.
+   */
+  async function requestJson(url, label = 'geocode', requestOptions = {}) {
+    const priority = requestOptions.priority === 'high' ? 'high' : 'low';
+    const cancelToken = requestOptions.cancelToken || null;
+    const stopped = () => Boolean(cancelToken?.cancelled);
+    if (stopped()) throw cancelledError();
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt += 1) {
-      if (attempt > 0) await delay(waitForRetry(lastError, attempt));
+      if (attempt > 0) {
+        await delay(waitForRetry(lastError, attempt));
+        if (stopped()) throw cancelledError();
+      }
+      let queued = null;
+      let controller = null;
+      const onCancel = () => {
+        try {
+          queued?.cancel?.();
+        } catch {
+          /* 이미 끝난 작업 */
+        }
+        try {
+          controller?.abort();
+        } catch {
+          /* 이미 끝난 요청 */
+        }
+      };
+      if (cancelToken) cancelToken.aborts.add(onCancel);
       try {
         // 레이트 리미터 안에서 요청해야 재시도까지 최소 간격이 지켜진다.
-        const payload = await schedule(async () => {
-          const controller = new AbortController();
+        queued = schedule(async () => {
+          if (stopped()) throw cancelledError();
+          controller = new AbortController();
           const timer = setTimeout(() => controller.abort(), timeoutMs);
           try {
             stats.requests += 1;
@@ -351,15 +523,20 @@ export function createGeocoder(options = {}) {
           } finally {
             clearTimeout(timer);
           }
-        });
-        return payload;
+        }, { priority });
+        return await queued;
       } catch (error) {
+        if (stopped() || error?.cancelled) throw cancelledError();
         lastError = error;
         if (error && error.name === 'AbortError') {
           lastError = new GeocodeError('timeout', { code: 'timeout', cause: error });
         }
-        // 429·5xx 만 다시 해 보고, 그 밖의 실패는 다음 어댑터로 넘긴다.
-        if (!error?.rateLimited && !error?.serverError) break;
+        // 429 는 기다리지 않고 바로 대체 제공자로 넘긴다.
+        if (lastError?.rateLimited) break;
+        // 5xx 만 다시 해 보고, 그 밖의 실패는 다음 어댑터로 넘긴다.
+        if (!error?.serverError) break;
+      } finally {
+        cancelToken?.aborts.delete(onCancel);
       }
     }
     stats.failures += 1;
@@ -373,34 +550,34 @@ export function createGeocoder(options = {}) {
     throw thrown;
   }
 
-  function searchNominatim(query) {
+  function searchNominatim(query, priority = 'high') {
     const url = `${primary.search}?format=jsonv2&q=${encodeURIComponent(query)}&limit=5&accept-language=ko&addressdetails=1`;
-    return requestJson(url, 'nominatim_search').then(data =>
+    return requestJson(url, 'nominatim_search', { priority }).then(data =>
       (Array.isArray(data) ? data : []).map(displayFromNominatim)
         .filter(row => row.name && Number.isFinite(row.lat) && Number.isFinite(row.lng)));
   }
 
-  function searchPhoton(query) {
+  function searchPhoton(query, priority = 'high') {
     const url = `${fallback.search}?q=${encodeURIComponent(query)}&lang=${PHOTON_LANG}&limit=5`;
-    return requestJson(url, 'photon_search').then(data =>
+    return requestJson(url, 'photon_search', { priority }).then(data =>
       (data?.features || []).map(rowFromPhoton)
         .filter(row => row.name && Number.isFinite(row.lat) && Number.isFinite(row.lng)));
   }
 
-  function reverseNominatim(point) {
+  function reverseNominatim(point, cancelToken) {
     const [lat, lng] = coordKey(point.lat, point.lng).split(',');
     const url = `${primary.reverse}?format=jsonv2&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1&accept-language=ko`;
-    return requestJson(url, 'nominatim_reverse').then(data => ({
+    return requestJson(url, 'nominatim_reverse', { cancelToken }).then(data => ({
       text: describeNominatimAddress(data),
       name: String(data?.name || ''),
       source: primary.id,
     }));
   }
 
-  function reversePhoton(point) {
+  function reversePhoton(point, cancelToken) {
     const [lat, lng] = coordKey(point.lat, point.lng).split(',');
     const url = `${fallback.reverse}?lat=${lat}&lon=${lng}&lang=${PHOTON_LANG}`;
-    return requestJson(url, 'photon_reverse').then(data => {
+    return requestJson(url, 'photon_reverse', { cancelToken }).then(data => {
       const feature = (data?.features || [])[0];
       return {
         text: describePhotonAddress(feature) || String(feature?.properties?.name || ''),
@@ -422,7 +599,8 @@ export function createGeocoder(options = {}) {
     const triedPrimary = primaryReady();
     if (triedPrimary) {
       try {
-        rows = await searchNominatim(query);
+        rows = await searchNominatim(query, 'high');
+        notePrimarySuccess();
       } catch (error) {
         primaryError = error;
         notePrimaryFailure(error);
@@ -440,7 +618,7 @@ export function createGeocoder(options = {}) {
     if (!triedPrimary || primaryError) {
       stats.fallbacks += 1;
       try {
-        const photonRows = await searchPhoton(query);
+        const photonRows = await searchPhoton(query, 'high');
         rows = triedPrimary ? photonRows : mergeSearchRows(rows, photonRows);
       } catch (fallbackError) {
         throw new GeocodeError('search_unavailable', {
@@ -451,7 +629,7 @@ export function createGeocoder(options = {}) {
     } else if (fallbackOnEmpty && rows.length === 0) {
       stats.emptyFallbacks += 1;
       try {
-        rows = mergeSearchRows(rows, await searchPhoton(query));
+        rows = mergeSearchRows(rows, await searchPhoton(query, 'high'));
       } catch {
         // 대체 검색이 실패해도 '결과 없음'이라는 주 결과는 그대로 유효하다
       }
@@ -498,26 +676,53 @@ export function createGeocoder(options = {}) {
       stats.coalesced += 1;
       return pending;
     }
-    const tracked = runReverse(point, key).finally(() => {
+    const token = makeCancelToken();
+    reverseTokens.set(key, token);
+    const tracked = runReverse(point, key, token).finally(() => {
       if (reverseInflight.get(key) === tracked) reverseInflight.delete(key);
+      if (reverseTokens.get(key) === token) reverseTokens.delete(key);
     });
     reverseInflight.set(key, tracked);
     return tracked;
   }
 
-  async function runReverse(point, key) {
+  /**
+   * 더 필요 없어진 역주소 요청을 끊는다 (참가자를 지우거나 다른 자리로 끌었을 때).
+   * 아직 큐에 서 있으면 큐에서 빼고, 이미 나갔으면 AbortController 로 중단한다.
+   * 반환: 실제로 취소한 요청이 있었는지
+   */
+  function cancelReverse(target) {
+    const key = typeof target === 'string'
+      ? (target.startsWith('reverse:') ? target : `reverse:${target}`)
+      : (target && Number.isFinite(Number(target.lat)) && Number.isFinite(Number(target.lng))
+        ? `reverse:${coordKey(target.lat, target.lng)}`
+        : '');
+    if (!key) return false;
+    const token = reverseTokens.get(key);
+    if (!token) return false;
+    token.cancel();
+    reverseTokens.delete(key);
+    reverseInflight.delete(key);
+    stats.cancelled += 1;
+    return true;
+  }
+
+  async function runReverse(point, key, cancelToken) {
     let lastError = null;
     let sawEmpty = false;
     let emptySource = '';
     // 429 쿨다운 중이면 Photon 역주소부터 쓴다.
     const adapters = [];
-    if (primaryReady()) adapters.push([primary.id, () => reverseNominatim(point), true]);
+    if (primaryReady()) adapters.push([primary.id, () => reverseNominatim(point, cancelToken), true]);
     else stats.providerSwitches += 1;
-    if (fallback) adapters.push([fallback.id, () => reversePhoton(point), false]);
+    if (fallback) adapters.push([fallback.id, () => reversePhoton(point, cancelToken), false]);
     for (const [id, run, isPrimary] of adapters) {
+      if (cancelToken?.cancelled) return { text: '', source: '', error: 'cancelled' };
       try {
         const result = await run();
+        if (cancelToken?.cancelled) return { text: '', source: '', error: 'cancelled' };
         if (result.text) {
+          if (isPrimary) notePrimarySuccess();
           writeCache(key, result);
           return result;
         }
@@ -525,6 +730,9 @@ export function createGeocoder(options = {}) {
         sawEmpty = true;
         emptySource = result.source || id;
       } catch (error) {
+        if (cancelToken?.cancelled || error?.cancelled) {
+          return { text: '', source: '', error: 'cancelled' };
+        }
         lastError = error;
         if (isPrimary) {
           notePrimaryFailure(error);
@@ -537,7 +745,7 @@ export function createGeocoder(options = {}) {
     return { text: '', source: '', error: lastError?.code || 'reverse_failed' };
   }
 
-  return { search, reverse, stats, cache, providerState };
+  return { search, reverse, cancelReverse, stats, cache, providerState };
 }
 
 /* 앱이 함께 쓰는 기본 인스턴스 — 역주소와 검색이 같은 큐를 공유한다.

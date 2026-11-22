@@ -6,7 +6,8 @@
   "description": "HD2Lab | Midpoint — N명에게 가장 공평한 만남 지점·거점과 그 주변 맛집·카페, 1차+2차 약속 코스를 찾는 정적 웹앱 (PKPilot0002)",
   "homepage": "https://hyangdan2.github.io/PKPilot0002/",
   "scripts": {
-    "test": "python3 tests/run_tests.py && python3 tests/e2e/app_checks.py",
+    "test": "python3 tests/check_repo.py && python3 tests/run_tests.py && python3 tests/e2e/app_checks.py",
+    "test:repo": "python3 tests/check_repo.py",
     "test:unit": "python3 tests/run_tests.py",
     "test:e2e": "python3 tests/e2e/app_checks.py",
     "test:e2e:live": "python3 tests/e2e/app_checks.py --base https://hyangdan2.github.io/PKPilot0002/",
