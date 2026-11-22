@@ -8,9 +8,12 @@
 
    - 하나의 레이트 리미터(기본 1.1초 간격)를 두 요청 종류가 함께 쓴다
    - 메모리 캐시 + TTL (같은 주소·같은 질의는 네트워크를 다시 쓰지 않는다)
+   - 같은 질의가 동시에 들어오면 요청 하나를 함께 쓴다 (in-flight 병합)
    - 8초 타임아웃, 429·5xx 는 한 번 재시도
    - Nominatim 실패 시 Photon 대체 검색 → 그래도 실패하면 GeocodeError
-   - 나중에 서버 프록시로 바꿀 때는 createGeocoder({ endpoints }) 만 갈아끼우면 된다
+   - Nominatim 이 '결과 없음'(HTTP 200 + [])을 주면 Photon 도 확인해 합친다
+   - 서버 프록시로 바꿀 때는 createGeocoder({ proxyUrl }) 또는 전역
+     globalThis.HD2_GEOCODE_PROXY 하나로 갈아끼우면 된다 (proxyEndpoints 참고)
    ================================================================== */
 
 export const NOMINATIM = {
@@ -25,10 +28,47 @@ export const PHOTON = {
   reverse: 'https://photon.komoot.io/reverse',
 };
 
+/**
+ * Photon 이 받는 언어는 default · de · en · fr 뿐이다.
+ * lang=ko 를 보내면 HTTP 400(Language is not supported)으로 거절당해
+ * 대체 검색이 아예 동작하지 않았다. default 는 OSM 의 현지어 이름을 준다
+ * — 한국 장소는 '강남역'처럼 한국어로 돌아온다.
+ */
+export const PHOTON_LANG = 'default';
+
 /** Nominatim 공개 인스턴스 예절 — 초당 1건을 넘기지 않는다. */
 export const GEOCODE_MIN_INTERVAL_MS = 1100;
 export const GEOCODE_TIMEOUT_MS = 8000;
-export const GEOCODE_CACHE_TTL_MS = 10 * 60 * 1000;
+/** 같은 질의·같은 좌표는 30분 동안 다시 묻지 않는다 (서버 요청량 절감) */
+export const GEOCODE_CACHE_TTL_MS = 30 * 60 * 1000;
+/** '결과 없음'은 금방 낡을 수 있으니 짧게만 기억한다 */
+export const GEOCODE_EMPTY_TTL_MS = 2 * 60 * 1000;
+
+/**
+ * 서버 프록시 경로 규약 (예: Server-HQ 의 /midpoint/geo).
+ *   {base}/nominatim/search?…  → https://nominatim.openstreetmap.org/search?…
+ *   {base}/nominatim/reverse?… → https://nominatim.openstreetmap.org/reverse?…
+ *   {base}/photon/api?…        → https://photon.komoot.io/api/?…
+ *   {base}/photon/reverse?…    → https://photon.komoot.io/reverse?…
+ * 프록시가 캐시·전역 레이트 리미터를 대신 지켜 주면 클라이언트 쪽 큐는 그대로 둔 채
+ * 트래픽만 서버로 옮길 수 있다.
+ */
+export function proxyEndpoints(baseUrl) {
+  const base = String(baseUrl || '').replace(/\/+$/, '');
+  if (!base) return [NOMINATIM, PHOTON];
+  return [
+    { id: NOMINATIM.id, search: `${base}/nominatim/search`, reverse: `${base}/nominatim/reverse` },
+    { id: PHOTON.id, search: `${base}/photon/api`, reverse: `${base}/photon/reverse` },
+  ];
+}
+
+/** 주입된 프록시가 있으면 그쪽 엔드포인트를, 없으면 공개 인스턴스를 쓴다. */
+function resolveEndpoints(options) {
+  if (options.endpoints) return options.endpoints;
+  const injected = options.proxyUrl
+    || (typeof globalThis !== 'undefined' ? globalThis.HD2_GEOCODE_PROXY : '');
+  return proxyEndpoints(injected);
+}
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -79,6 +119,42 @@ function displayFromNominatim(item) {
     lng: Number(item.lon),
     source: NOMINATIM.id,
   };
+}
+
+/** 검색 결과 중복 판정 — 같은 좌표(약 33m) 또는 같은 이름이 가까이(약 220m) 있으면 같은 곳 */
+const SAME_PLACE_DEG = 0.0003;
+const SAME_NAME_DEG = 0.002;
+
+function nameKeyOf(row) {
+  return String(row?.name || '')
+    .normalize('NFKC')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function degreesApart(a, b) {
+  const lat = Math.abs(Number(a.lat) - Number(b.lat));
+  const lng = Math.abs(Number(a.lng) - Number(b.lng)) * Math.cos((Number(a.lat) * Math.PI) / 180);
+  return Math.hypot(lat, lng);
+}
+
+/**
+ * 두 제공자 결과를 좌표·이름 기준으로 중복 제거해 합친다.
+ * 앞쪽(주 제공자) 결과의 순서를 유지한다.
+ */
+export function mergeSearchRows(primaryRows = [], secondaryRows = []) {
+  const merged = [];
+  [...primaryRows, ...secondaryRows].forEach(row => {
+    if (!row || !Number.isFinite(Number(row.lat)) || !Number.isFinite(Number(row.lng))) return;
+    const name = nameKeyOf(row);
+    const duplicate = merged.some(other => {
+      if (degreesApart(row, other) <= SAME_PLACE_DEG) return true;
+      return Boolean(name) && name === nameKeyOf(other) && degreesApart(row, other) <= SAME_NAME_DEG;
+    });
+    if (!duplicate) merged.push(row);
+  });
+  return merged;
 }
 
 function rowFromPhoton(feature) {
@@ -133,7 +209,7 @@ export function describeNominatimAddress(data) {
  *   fetchImpl, schedule(레이트 리미터), timeoutMs, retries, cacheTtlMs, now, endpoints
  */
 export function createGeocoder(options = {}) {
-  const endpoints = options.endpoints || [NOMINATIM, PHOTON];
+  const endpoints = resolveEndpoints(options);
   const primary = endpoints[0];
   const fallback = endpoints[1] || null;
   const fetchImpl = options.fetchImpl || ((...args) => fetch(...args));
@@ -141,16 +217,20 @@ export function createGeocoder(options = {}) {
   const retries = options.retries ?? 1;
   const retryDelayMs = options.retryDelayMs ?? 500;
   const cacheTtlMs = options.cacheTtlMs ?? GEOCODE_CACHE_TTL_MS;
+  const emptyTtlMs = options.emptyTtlMs ?? GEOCODE_EMPTY_TTL_MS;
+  const fallbackOnEmpty = options.fallbackOnEmpty !== false;
   const now = options.now || (() => Date.now());
   const schedule = options.schedule || createRateLimiter(options.minIntervalMs ?? GEOCODE_MIN_INTERVAL_MS);
 
   const cache = new Map();
-  const stats = { requests: 0, cached: 0, failures: 0, fallbacks: 0 };
+  const inflight = new Map();
+  const stats = { requests: 0, cached: 0, failures: 0, fallbacks: 0, emptyFallbacks: 0, coalesced: 0 };
 
   function readCache(key) {
     const hit = cache.get(key);
     if (!hit) return null;
-    if (now() - hit.at > cacheTtlMs) {
+    const ttl = Number.isFinite(hit.ttl) ? hit.ttl : cacheTtlMs;
+    if (now() - hit.at > ttl) {
       cache.delete(key);
       return null;
     }
@@ -158,8 +238,8 @@ export function createGeocoder(options = {}) {
     return hit.value;
   }
 
-  function writeCache(key, value) {
-    cache.set(key, { value, at: now() });
+  function writeCache(key, value, ttl) {
+    cache.set(key, { value, at: now(), ttl });
     if (cache.size > 200) {
       const oldest = [...cache.entries()].sort((a, b) => a[1].at - b[1].at)[0];
       if (oldest) cache.delete(oldest[0]);
@@ -215,7 +295,7 @@ export function createGeocoder(options = {}) {
   }
 
   function searchPhoton(query) {
-    const url = `${fallback.search}?q=${encodeURIComponent(query)}&lang=ko&limit=5`;
+    const url = `${fallback.search}?q=${encodeURIComponent(query)}&lang=${PHOTON_LANG}&limit=5`;
     return requestJson(url, 'photon_search').then(data =>
       (data?.features || []).map(rowFromPhoton)
         .filter(row => row.name && Number.isFinite(row.lat) && Number.isFinite(row.lng)));
@@ -231,7 +311,7 @@ export function createGeocoder(options = {}) {
   }
 
   function reversePhoton(point) {
-    const url = `${fallback.reverse}?lat=${Number(point.lat).toFixed(6)}&lon=${Number(point.lng).toFixed(6)}&lang=ko`;
+    const url = `${fallback.reverse}?lat=${Number(point.lat).toFixed(6)}&lon=${Number(point.lng).toFixed(6)}&lang=${PHOTON_LANG}`;
     return requestJson(url, 'photon_reverse').then(data => {
       const feature = (data?.features || [])[0];
       return {
@@ -242,32 +322,67 @@ export function createGeocoder(options = {}) {
     });
   }
 
-  /** 주소·장소 검색 — 실패하면 대체 어댑터 → 그래도 없으면 GeocodeError */
-  async function search(rawQuery) {
-    const query = normQuery(rawQuery);
-    if (!query) return [];
-    const key = `search:${query.toLowerCase()}`;
-    const hit = readCache(key);
-    if (hit) return hit;
-
+  /**
+   * 실제 검색 한 번 — 주 제공자 → (실패 또는 0건이면) 대체 제공자.
+   * Nominatim 은 모르는 질의에도 예외 없이 HTTP 200 + [] 를 주므로,
+   * '0건'도 대체 제공자를 확인해야 한국어 장소를 놓치지 않는다.
+   */
+  async function performSearch(query, key) {
+    let rows = [];
+    let primaryError = null;
     try {
-      const rows = await searchNominatim(query);
-      writeCache(key, rows);
+      rows = await searchNominatim(query);
+    } catch (error) {
+      primaryError = error;
+    }
+
+    if (!fallback) {
+      if (primaryError) throw primaryError;
+      writeCache(key, rows, rows.length ? undefined : emptyTtlMs);
       return rows;
-    } catch (primaryError) {
-      if (!fallback) throw primaryError;
+    }
+
+    if (primaryError) {
       stats.fallbacks += 1;
       try {
-        const rows = await searchPhoton(query);
-        writeCache(key, rows);
-        return rows;
+        rows = await searchPhoton(query);
       } catch (fallbackError) {
         throw new GeocodeError('search_unavailable', {
           code: 'search_unavailable',
           cause: fallbackError,
         });
       }
+    } else if (fallbackOnEmpty && rows.length === 0) {
+      stats.emptyFallbacks += 1;
+      try {
+        rows = mergeSearchRows(rows, await searchPhoton(query));
+      } catch {
+        // 대체 검색이 실패해도 '결과 없음'이라는 주 결과는 그대로 유효하다
+      }
     }
+
+    writeCache(key, rows, rows.length ? undefined : emptyTtlMs);
+    return rows;
+  }
+
+  /** 주소·장소 검색 — 실패하면 대체 어댑터 → 그래도 없으면 GeocodeError */
+  function search(rawQuery) {
+    const query = normQuery(rawQuery);
+    if (!query) return Promise.resolve([]);
+    const key = `search:${query.toLowerCase()}`;
+    const hit = readCache(key);
+    if (hit) return Promise.resolve(hit);
+    // 같은 질의가 이미 날아가 있으면 그 요청을 함께 쓴다 — 서버에 두 번 묻지 않는다
+    const pending = inflight.get(key);
+    if (pending) {
+      stats.coalesced += 1;
+      return pending;
+    }
+    const tracked = performSearch(query, key).finally(() => {
+      if (inflight.get(key) === tracked) inflight.delete(key);
+    });
+    inflight.set(key, tracked);
+    return tracked;
   }
 
   /**
@@ -301,5 +416,6 @@ export function createGeocoder(options = {}) {
   return { search, reverse, stats, cache };
 }
 
-/* 앱이 함께 쓰는 기본 인스턴스 — 역주소와 검색이 같은 큐를 공유한다 */
+/* 앱이 함께 쓰는 기본 인스턴스 — 역주소와 검색이 같은 큐를 공유한다.
+   index.html 에서 globalThis.HD2_GEOCODE_PROXY 를 먼저 채우면 서버 프록시로 붙는다. */
 export const geocoder = createGeocoder();

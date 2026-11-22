@@ -3061,6 +3061,62 @@ body.is-dragging-pin .pin-person {
   transform: translate(-50%, 0);
 }
 
+/* 앱이 열리지 않을 때의 인앱 대체 안내 — 현재 화면 위에 뜨고 닫을 수 있다 */
+.map-fallback {
+  position: fixed;
+  z-index: 3100;
+  left: 50%;
+  bottom: 74px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(94vw, 520px);
+  padding: 10px 12px 10px 16px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+  box-shadow: var(--shadow-lg);
+  transform: translateX(-50%);
+}
+
+.map-fallback[hidden] {
+  display: none;
+}
+
+.map-fallback-text {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.45;
+}
+
+.map-fallback-open {
+  flex: none;
+  padding: 7px 12px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  text-decoration: none;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.map-fallback-close {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
 /* ------------------------------------------------------------------
    12. 반응형 — 모바일 바텀 시트
    ------------------------------------------------------------------ */
@@ -3430,6 +3486,12 @@ body.is-dragging-pin .pin-person {
   .toast {
     bottom: calc(var(--sheet-h, var(--peek-h)) + 20px);
     font-size: 12px;
+  }
+
+  .map-fallback {
+    bottom: calc(var(--sheet-h, var(--peek-h)) + 68px);
+    flex-wrap: wrap;
+    max-width: 94vw;
   }
 
   .fair {

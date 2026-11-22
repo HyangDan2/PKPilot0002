@@ -138,6 +138,23 @@ export function providerList(travelMode) {
     : ['kakao', 'naver'];
 }
 
+/**
+ * 앱 스킴만 있는 제공자(티맵)의 웹 대체 길찾기.
+ * 티맵 앱이 없으면 자동차 경로를 아는 카카오맵 웹 길찾기로 넘긴다.
+ */
+export function appFallbackWebUrl(key, { from, to, travelMode = 'transit' } = {}) {
+  const provider = PROVIDERS[key];
+  if (!provider) return '';
+  if (provider.web) return provider.web({ from, to, travelMode });
+  return kakaoWebRouteUrl({ from, to, travelMode: travelMode === 'car' ? 'car' : travelMode });
+}
+
+/** 앱 스킴 링크인지 (웹 링크·일반 https 는 대체 경로가 필요 없다) */
+export function isAppSchemeUrl(key, url) {
+  const scheme = PROVIDERS[key]?.appScheme;
+  return Boolean(scheme) && String(url || '').startsWith(scheme);
+}
+
 /* ------------------------------------------------------------------
    장소 검색 딥링크 — 등록 POI가 없는 거점의 fallback
    "강남역 맛집" 처럼 검색어를 만들어 지도 앱/웹 검색으로 넘긴다.

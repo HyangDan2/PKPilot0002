@@ -8,6 +8,8 @@
 
 import {
   PROVIDERS,
+  appFallbackWebUrl,
+  isAppSchemeUrl,
   kakaoAppUrl,
   kakaoWalkRouteUrl,
   kakaoWebRouteUrl,
@@ -157,4 +159,31 @@ test('장소 검색: 거점 이름 + 종류로 질의를 만든다', () => {
   assertEqual(placeSearchQuery('강남역', 'cafe'), '강남역 카페');
   assertEqual(placeSearchUrl('naver', '강남역 맛집'), 'https://map.naver.com/p/search/%EA%B0%95%EB%82%A8%EC%97%AD%20%EB%A7%9B%EC%A7%91');
   assert(placeSearchUrl('kakao', '강남역 맛집').startsWith('https://map.kakao.com/link/search/'));
+});
+
+/* ------------------------------------------------------------------
+   P2-04 · 앱 미설치 대체 경로
+   앱 스킴만 있는 티맵도 웹 길찾기(카카오맵 자동차 경로)로 넘겨
+   길찾기 버튼이 죽지 않게 한다.
+   ------------------------------------------------------------------ */
+
+test('앱 대체: 카카오·티맵 스킴 링크에만 웹 대체 URL 을 붙인다', () => {
+  const kakaoApp = kakaoAppUrl({ from: FROM, to: TO, travelMode: 'car' });
+  assert(isAppSchemeUrl('kakao', kakaoApp), '카카오 앱 스킴을 알아보지 못했다');
+  const kakaoWeb = appFallbackWebUrl('kakao', { from: FROM, to: TO, travelMode: 'car' });
+  assert(kakaoWeb.startsWith('https://map.kakao.com/link/by/car/'), kakaoWeb);
+
+  // 네이버는 앱·웹이 같은 https 링크라 대체가 필요 없다
+  const naver = PROVIDERS.naver.app({ from: FROM, to: TO, travelMode: 'car' });
+  assert(!isAppSchemeUrl('naver', naver), '네이버 https 링크를 앱 스킴으로 봤다');
+});
+
+test('앱 대체: 티맵은 웹 길찾기가 없어 카카오맵 자동차 경로로 넘긴다', () => {
+  assertEqual(PROVIDERS.tmap.web, null);
+  const tmap = tmapRouteUrl({ from: FROM, to: TO });
+  assert(isAppSchemeUrl('tmap', tmap));
+  const fallback = appFallbackWebUrl('tmap', { from: FROM, to: TO, travelMode: 'car' });
+  assert(fallback.startsWith('https://map.kakao.com/link/by/car/'), `티맵 대체 경로가 없다: ${fallback}`);
+  assert(fallback.includes(encodeURIComponent('서울역')) && fallback.includes(encodeURIComponent('강남역')),
+    `출발지·목적지가 빠졌다: ${fallback}`);
 });
