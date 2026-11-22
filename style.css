@@ -2863,7 +2863,9 @@ body.is-dragging-pin .pin-person {
 
 /* 네이버 지도 말풍선(InfoWindow) 안쪽 — 바탕색은 app.js 의 InfoWindow 옵션과 맞춘다 */
 .map-popup {
-  padding: 1px 1px 0;
+  /* 네이버 InfoWindow 는 테두리만 그리고 안쪽 여백을 주지 않는다 — 글자가 테두리에
+     붙지 않도록 여기서 여백을 준다 (테마와 무관하게 같은 값) */
+  padding: 5px 9px 6px;
   color: var(--text);
   font-family: var(--font);
   font-size: 12px;
@@ -2872,7 +2874,7 @@ body.is-dragging-pin .pin-person {
 
 .map-popup strong {
   display: block;
-  margin-bottom: 1px;
+  margin-bottom: 2px;
   color: var(--text);
   font-size: 13px;
 }
